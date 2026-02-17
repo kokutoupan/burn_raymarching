@@ -9,28 +9,23 @@ use image::{ColorType, save_buffer};
 // --- 1. モデル定義 (Module) ---
 #[derive(Module, Debug)]
 struct SceneModel<B: Backend> {
-    pos1: Param<Tensor<B, 1>>,
-    color1: Param<Tensor<B, 1>>, // Logits
-
-    pos2: Param<Tensor<B, 1>>,
-    color2: Param<Tensor<B, 1>>, // Logits
+    centers: Param<Tensor<B, 2>>,
+    colors: Param<Tensor<B, 2>>, // Logits
 }
 
 impl<B: Backend> SceneModel<B> {
-    fn new(pos1: Tensor<B, 1>, col1: Tensor<B, 1>, pos2: Tensor<B, 1>, col2: Tensor<B, 1>) -> Self {
+    fn new(centers: Tensor<B, 2>, colors: Tensor<B, 2>) -> Self {
         Self {
-            pos1: Param::from_tensor(pos1),
-            color1: Param::from_tensor(col1),
-            pos2: Param::from_tensor(pos2),
-            color2: Param::from_tensor(col2),
+            centers: Param::from_tensor(centers),
+            colors: Param::from_tensor(colors),
         }
     }
 
     fn forward(&self, ray_org: Tensor<B, 2>, ray_dir: Tensor<B, 2>) -> Tensor<B, 2> {
-        let c1 = activation::sigmoid(self.color1.val());
-        let c2 = activation::sigmoid(self.color2.val());
+        let colors_rgb = activation::sigmoid(self.colors.val());
+        let centers = self.centers.val();
 
-        render(ray_org, ray_dir, self.pos1.val(), c1, self.pos2.val(), c2)
+        render(ray_org, ray_dir, centers, colors_rgb)
     }
 }
 
@@ -38,24 +33,6 @@ impl<B: Backend> SceneModel<B> {
 fn sdf_sphere<B: Backend>(p: Tensor<B, 2>, center: Tensor<B, 1>, radius: f32) -> Tensor<B, 2> {
     let diff = p - center.unsqueeze();
     (diff.powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt() - radius
-}
-
-fn calc_normal<B: Backend>(p: Tensor<B, 2>, center: Tensor<B, 1>) -> Tensor<B, 2> {
-    let eps = 1e-4;
-    let e_x = Tensor::<B, 1>::from_floats([eps, 0.0, 0.0], &p.device()).unsqueeze();
-    let e_y = Tensor::<B, 1>::from_floats([0.0, eps, 0.0], &p.device()).unsqueeze();
-    let e_z = Tensor::<B, 1>::from_floats([0.0, 0.0, eps], &p.device()).unsqueeze();
-
-    let nx = sdf_sphere(p.clone() + e_x.clone(), center.clone(), 0.5)
-        - sdf_sphere(p.clone() - e_x, center.clone(), 0.5);
-    let ny = sdf_sphere(p.clone() + e_y.clone(), center.clone(), 0.5)
-        - sdf_sphere(p.clone() - e_y, center.clone(), 0.5);
-    let nz = sdf_sphere(p.clone() + e_z.clone(), center.clone(), 0.5)
-        - sdf_sphere(p.clone() - e_z, center.clone(), 0.5);
-
-    let n = Tensor::cat(vec![nx, ny, nz], 1);
-    let len = (n.clone().powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt();
-    n / len
 }
 
 // k: 溶け具合 (0.1〜0.5くらい)
@@ -71,22 +48,14 @@ fn smooth_min<B: Backend>(a: Tensor<B, 2>, b: Tensor<B, 2>, k: f32) -> Tensor<B,
     min_ab - h.powf_scalar(2.0) * (k * 0.25)
 }
 
-fn calc_normal_scene<B: Backend>(
-    p: Tensor<B, 2>,
-    c1: Tensor<B, 1>,
-    c2: Tensor<B, 1>,
-) -> Tensor<B, 2> {
+fn calc_normal_scene<B: Backend>(p: Tensor<B, 2>, centers: Tensor<B, 2>) -> Tensor<B, 2> {
     let eps = 1e-4;
     let e_x = Tensor::<B, 1>::from_floats([eps, 0.0, 0.0], &p.device()).unsqueeze();
     let e_y = Tensor::<B, 1>::from_floats([0.0, eps, 0.0], &p.device()).unsqueeze();
     let e_z = Tensor::<B, 1>::from_floats([0.0, 0.0, eps], &p.device()).unsqueeze();
 
     // シーン全体のSDFを計算するクロージャ的ヘルパー
-    let get_dist = |pos: Tensor<B, 2>| -> Tensor<B, 2> {
-        let d1 = sdf_sphere(pos.clone(), c1.clone(), 0.4);
-        let d2 = sdf_sphere(pos.clone(), c2.clone(), 0.4);
-        smooth_min(d1, d2, 0.2) // k=0.2 で融合
-    };
+    let get_dist = |pos: Tensor<B, 2>| -> Tensor<B, 2> { scene_sdf_value(pos, centers.clone()) };
 
     let nx = get_dist(p.clone() + e_x.clone()) - get_dist(p.clone() - e_x);
     let ny = get_dist(p.clone() + e_y.clone()) - get_dist(p.clone() - e_y);
@@ -97,15 +66,33 @@ fn calc_normal_scene<B: Backend>(
     n / len
 }
 
+// 配列からSDF値を計算する関数 (ループ処理)
+fn scene_sdf_value<B: Backend>(p: Tensor<B, 2>, centers: Tensor<B, 2>) -> Tensor<B, 2> {
+    let num_spheres = centers.dims()[0];
+
+    // 最初の球の距離で初期化
+    let first_center = centers.clone().slice([0..1]).squeeze::<1>();
+    let mut min_dist = sdf_sphere(p.clone(), first_center, 0.4);
+
+    // 2個目以降をSmoothMinで結合していく
+    // (Rustのループでグラフを展開する)
+    for i in 1..num_spheres {
+        let center = centers.clone().slice([i..(i + 1)]).squeeze::<1>(); // [3]
+        let dist = sdf_sphere(p.clone(), center, 0.4);
+        min_dist = smooth_min(min_dist, dist, 0.2);
+    }
+
+    min_dist
+}
+
 fn render<B: Backend>(
     ray_org: Tensor<B, 2>,
     ray_dir: Tensor<B, 2>,
-    pos1: Tensor<B, 1>,
-    col1: Tensor<B, 1>,
-    pos2: Tensor<B, 1>,
-    col2: Tensor<B, 1>,
+    centers: Tensor<B, 2>,
+    colors: Tensor<B, 2>,
 ) -> Tensor<B, 2> {
     let num_rays = ray_org.dims()[0];
+    let num_spheres = centers.dims()[0];
     let device = ray_org.device();
     let mut t = Tensor::<B, 2>::zeros([num_rays, 1], &device);
 
@@ -113,18 +100,15 @@ fn render<B: Backend>(
     for _ in 0..40 {
         let p = ray_org.clone() + ray_dir.clone() * t.clone();
 
-        let d1 = sdf_sphere(p.clone(), pos1.clone(), 0.4);
-        let d2 = sdf_sphere(p.clone(), pos2.clone(), 0.4);
-
         // シーン全体の距離
-        let dist = smooth_min(d1, d2, 0.2);
+        let dist = scene_sdf_value(p, centers.clone());
         t = t + dist;
     }
 
     let p_final = ray_org + ray_dir * t;
 
     // 法線 (シーン全体)
-    let normal = calc_normal_scene(p_final.clone(), pos1.clone(), pos2.clone());
+    let normal = calc_normal_scene(p_final.clone(), centers.clone());
 
     // ライティング
     let light_dir = Tensor::<B, 1>::from_floats([-0.5, 0.5, -1.0], &device);
@@ -132,21 +116,28 @@ fn render<B: Backend>(
     let diffuse = (normal * light_dir.unsqueeze()).sum_dim(1).clamp_min(0.0);
     let lighting = diffuse + 0.1;
 
-    // --- 色の混合  ---
-    let d1_final = sdf_sphere(p_final.clone(), pos1.clone(), 0.4); // 負の値になりうる
-    let d2_final = sdf_sphere(p_final.clone(), pos2.clone(), 0.4);
+    // 3. Color Blending (N球混合)
+    let mut weight_sum = Tensor::<B, 2>::zeros([num_rays, 1], &device) + 1e-5;
+    let mut color_sum = Tensor::<B, 2>::zeros([num_rays, 3], &device);
 
-    let w1 = (d1_final.clone().neg() * 10.0).exp();
-    let w2 = (d2_final.clone().neg() * 10.0).exp();
-    let w_sum = w1.clone() + w2.clone() + 1e-5;
+    for i in 0..num_spheres {
+        let center = centers.clone().slice([i..(i + 1)]).squeeze::<1>();
+        let color = colors.clone().slice([i..(i + 1)]).squeeze::<1>();
+        let dist = sdf_sphere(p_final.clone(), center, 0.4);
 
-    // 混合色 = (c1 * w1 + c2 * w2) / (w1 + w2)
-    let mixed_color = (col1.unsqueeze() * w1 + col2.unsqueeze() * w2) / w_sum;
+        // 重み計算 (指数関数的に柔らかくする)
+        let weight = (-dist * 10.0).exp();
+
+        weight_sum = weight_sum + weight.clone();
+        color_sum = color_sum + color.unsqueeze() * weight;
+    }
+
+    let mixed_color = color_sum / weight_sum;
 
     let object_color = mixed_color * lighting;
 
     // マスク
-    let dist_scene = smooth_min(d1_final, d2_final, 0.2);
+    let dist_scene = scene_sdf_value(p_final, centers);
     let mask = (-dist_scene.powf_scalar(2.0) * 10.0).exp();
 
     object_color * mask
@@ -191,20 +182,29 @@ fn main() {
         Tensor::<MyBackend, 1>::from_floats(dirs.as_slice(), &device).reshape([num_rays, 3]);
 
     // --- Target Image Generation ---
-    // 正解: 「赤(右上)」と「青(左下)」が融合している状態
-    let t_pos1 = Tensor::<MyBackend, 1>::from_floats([0.2, 0.2, 0.0], &device);
-    let t_col1 = Tensor::<MyBackend, 1>::from_floats([1.0, 0.0, 0.0], &device); // 赤
-    let t_pos2 = Tensor::<MyBackend, 1>::from_floats([-0.2, -0.2, 0.0], &device);
-    let t_col2 = Tensor::<MyBackend, 1>::from_floats([0.0, 0.0, 1.0], &device); // 青
+    let target_centers = Tensor::<MyBackend, 1>::from_floats(
+        [
+            0.2, 0.2, 0.0, // 球1
+            -0.2, -0.2, 0.0, 0.0, 0.0, 0.0,
+        ], // 球2
+        &device,
+    )
+    .reshape([3, 3]);
+    let target_colors = Tensor::<MyBackend, 1>::from_floats(
+        [
+            1.0, 0.0, 0.0, // 赤
+            0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+        ], // 青
+        &device,
+    )
+    .reshape([3, 3]);
 
     // 正解画像作成 (モデルを使わず直接関数を呼ぶ)
     let target_img = render(
         ray_org.clone(),
         ray_dir.clone(),
-        t_pos1.clone(),
-        t_col1.clone(),
-        t_pos2.clone(),
-        t_col2.clone(),
+        target_centers.clone(),
+        target_colors.clone(),
     )
     .detach();
     save_tensor_as_image(
@@ -215,19 +215,18 @@ fn main() {
     );
 
     // --- Model Init ---
-    // 初期状態: 2つとも真ん中付近で、色はグレー
-    let init_pos1 = Tensor::<MyBackend, 1>::from_floats([0.0, 0.0, 0.0], &device);
-    let init_col1 = Tensor::<MyBackend, 1>::from_floats([0.0, 0.0, 0.0], &device); // Logit 0 -> Sigmoid 0.5
-    let init_pos2 = Tensor::<MyBackend, 1>::from_floats([0.0, 0.0, 0.0], &device);
-    let init_col2 = Tensor::<MyBackend, 1>::from_floats([0.0, 0.0, 0.0], &device);
+    // 初期値: 中央付近に(N=3)(shape [3,N])
+    let init_centers = Tensor::<MyBackend, 1>::zeros([9], &device).reshape([3, 3]);
 
-    let mut model = SceneModel::new(init_pos1, init_col1, init_pos2, init_col2);
+    let init_logits = Tensor::<MyBackend, 1>::zeros([9], &device).reshape([3, 3]);
+
+    let mut model = SceneModel::new(init_centers, init_logits);
     let mut optim = AdamConfig::new().init();
 
     println!("Start Optimization (Metaballs)...");
     let lr = 0.1;
 
-    for i in 0..100 {
+    for i in 0..200 {
         let img = model.forward(ray_org.clone(), ray_dir.clone());
 
         if i % 20 == 0 {
@@ -252,18 +251,16 @@ fn main() {
                 "Step {}: Loss = {:.6}\n  Pos: {}\n  Col: {}",
                 i,
                 loss.into_scalar(),
-                model.pos1.val(),
-                activation::sigmoid(model.color1.val()),
+                model.centers.val(),
+                activation::sigmoid(model.colors.val()),
             );
         }
     }
 
     println!(
-        "Final Result:\n  Pos1: {}\n  Col1: {}\n  Pos2: {}\n  Col2: {}",
-        model.pos1.val(),
-        activation::sigmoid(model.color1.val()),
-        model.pos2.val(),
-        activation::sigmoid(model.color2.val()),
+        "Final Result:\n  Pos: {}\n  Col: {}",
+        model.centers.val(),
+        activation::sigmoid(model.colors.val()),
     );
     let img = model.forward(ray_org.clone(), ray_dir.clone());
     save_tensor_as_image(img.clone(), width as u32, height as u32, "final.png");
