@@ -1,5 +1,5 @@
 Saved image to target.png
-Start Optimization with 4096 rays...
+Start Optimization...
 Target: Tensor {
   data:
 [0.3, 0.3, 0.0],
@@ -11,7 +11,7 @@ Target: Tensor {
 }
 Initial: Tensor {
   data:
-[-0.5, -0.5, 0.0],
+[0.0, 0.0, 0.0],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
@@ -19,19 +19,19 @@ Initial: Tensor {
   dtype:  "f32",
 }
 Saved image to step_0.png
-Step 0: Loss = 0.112793, Pos = Tensor {
+Step 0: Loss = 0.001236
+  Pos: Tensor {
   data:
-[-0.5001008, -0.5001008, 3.696531e-7],
+[0.09900024, 0.09911257, 0.098002166],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Saved image to step_10.png
-Step 10: Loss = 0.106445, Pos = Tensor {
+  Col: Tensor {
   data:
-[-0.4090125, -0.40901312, 0.09387317],
+[0.48345664, 0.47602966, 0.47602966],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
@@ -39,19 +39,19 @@ Step 10: Loss = 0.106445, Pos = Tensor {
   dtype:  "f32",
 }
 Saved image to step_20.png
-Step 20: Loss = 0.106445, Pos = Tensor {
+Step 20: Loss = 0.000138
+  Pos: Tensor {
   data:
-[-0.4094947, -0.40950507, 0.0942603],
+[0.27863255, 0.31967142, 0.078450635],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Saved image to step_30.png
-Step 30: Loss = 0.106444, Pos = Tensor {
+  Col: Tensor {
   data:
-[-0.40967447, -0.41068587, 0.09513997],
+[0.82600266, 0.1644594, 0.1644594],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
@@ -59,19 +59,19 @@ Step 30: Loss = 0.106444, Pos = Tensor {
   dtype:  "f32",
 }
 Saved image to step_40.png
-Step 40: Loss = 0.086045, Pos = Tensor {
+Step 40: Loss = 0.000036
+  Pos: Tensor {
   data:
-[-0.18898728, -0.10890024, 0.28071842],
+[0.30140188, 0.3000576, 0.02104704],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Saved image to step_50.png
-Step 50: Loss = 0.023317, Pos = Tensor {
+  Col: Tensor {
   data:
-[0.23101397, 0.4039018, 0.32684278],
+[0.91570204, 0.07980695, 0.07980695],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
@@ -79,19 +79,19 @@ Step 50: Loss = 0.023317, Pos = Tensor {
   dtype:  "f32",
 }
 Saved image to step_60.png
-Step 60: Loss = 0.017334, Pos = Tensor {
+Step 60: Loss = 0.000023
+  Pos: Tensor {
   data:
-[0.23117672, 0.4038156, 0.3268816],
+[0.28781545, 0.284816, -0.010676351],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Saved image to step_70.png
-Step 70: Loss = 0.017334, Pos = Tensor {
+  Col: Tensor {
   data:
-[0.23139685, 0.40370005, 0.32693392],
+[0.93776554, 0.057275884, 0.057275884],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
@@ -99,28 +99,38 @@ Step 70: Loss = 0.017334, Pos = Tensor {
   dtype:  "f32",
 }
 Saved image to step_80.png
-Step 80: Loss = 0.017334, Pos = Tensor {
+Step 80: Loss = 0.000034
+  Pos: Tensor {
   data:
-[0.23174277, 0.40352035, 0.327016],
+[0.2697564, 0.29458362, -0.0039118505],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Saved image to step_90.png
-Step 90: Loss = 0.017334, Pos = Tensor {
+  Col: Tensor {
   data:
-[0.2326598, 0.40305087, 0.32723278],
+[0.9469183, 0.04776055, 0.04776055],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
   kind:  "Float",
   dtype:  "f32",
 }
-Final Result: Tensor {
+Final Result:
+  Pos: Tensor {
   data:
-[0.2810867, 0.37848467, 0.3386527],
+[0.285299, 0.30203357, 0.0024303277],
+  shape:  [3],
+  device:  DefaultDevice,
+  backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
+  kind:  "Float",
+  dtype:  "f32",
+}
+  Col: Tensor {
+  data:
+[0.9521699, 0.042127337, 0.042127337],
   shape:  [3],
   device:  DefaultDevice,
   backend:  "autodiff<fusion<cubecl<wgpu<wgsl>>>>",
