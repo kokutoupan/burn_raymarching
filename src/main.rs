@@ -9,53 +9,68 @@ use image::{ColorType, save_buffer};
 // --- 1. モデル定義 (Module) ---
 #[derive(Module, Debug)]
 struct SceneModel<B: Backend> {
-    centers: Param<Tensor<B, 2>>,
-    colors: Param<Tensor<B, 2>>, // Logits
+    centers: Param<Tensor<B, 2>>, // [N, 3]
+    colors: Param<Tensor<B, 2>>,  // [N, 3]
+    radius: Param<Tensor<B, 2>>,  // [N, 1] 半径 (スカラだが扱いやすくするため2次元配列)
 }
 
 impl<B: Backend> SceneModel<B> {
-    fn new(centers: Tensor<B, 2>, colors: Tensor<B, 2>) -> Self {
+    fn new(centers: Tensor<B, 2>, colors: Tensor<B, 2>, radius: Tensor<B, 2>) -> Self {
         Self {
             centers: Param::from_tensor(centers),
             colors: Param::from_tensor(colors),
+            radius: Param::from_tensor(radius),
         }
     }
 
     fn forward(&self, ray_org: Tensor<B, 2>, ray_dir: Tensor<B, 2>) -> Tensor<B, 2> {
         let colors_rgb = activation::sigmoid(self.colors.val());
         let centers = self.centers.val();
+        let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
 
-        render(ray_org, ray_dir, centers, colors_rgb)
+        render(ray_org, ray_dir, centers, colors_rgb, radius_positive)
     }
 }
 
 // SDF
-fn sdf_sphere<B: Backend>(p: Tensor<B, 2>, center: Tensor<B, 1>, radius: f32) -> Tensor<B, 2> {
+fn sdf_sphere<B: Backend>(
+    p: Tensor<B, 2>,
+    center: Tensor<B, 1>,
+    radius: Tensor<B, 1>,
+) -> Tensor<B, 2> {
     let diff = p - center.unsqueeze();
-    (diff.powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt() - radius
+    (diff.powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt() - radius.unsqueeze()
 }
 
 // k: 溶け具合 (0.1〜0.5くらい)
 fn smooth_min<B: Backend>(a: Tensor<B, 2>, b: Tensor<B, 2>, k: f32) -> Tensor<B, 2> {
     // h = max(k - |a - b|, 0) / k
-    let h = (Tensor::<B, 1>::from_floats([k], &a.device()).unsqueeze()
-        - (a.clone() - b.clone()).abs())
-    .clamp_min(0.0)
-        / k;
+    let h = (a.clone() - b.clone())
+        .abs()
+        .neg()
+        .add_scalar(k)
+        .clamp_min(0.0)
+        .div_scalar(k);
 
     // result = min(a, b) - h^2 * k / 4
     let min_ab = a.min_pair(b);
     min_ab - h.powf_scalar(2.0) * (k * 0.25)
 }
 
-fn calc_normal_scene<B: Backend>(p: Tensor<B, 2>, centers: Tensor<B, 2>) -> Tensor<B, 2> {
+fn calc_normal_scene<B: Backend>(
+    p: Tensor<B, 2>,
+    centers: Tensor<B, 2>,
+    radius: Tensor<B, 2>,
+) -> Tensor<B, 2> {
     let eps = 1e-4;
     let e_x = Tensor::<B, 1>::from_floats([eps, 0.0, 0.0], &p.device()).unsqueeze();
     let e_y = Tensor::<B, 1>::from_floats([0.0, eps, 0.0], &p.device()).unsqueeze();
     let e_z = Tensor::<B, 1>::from_floats([0.0, 0.0, eps], &p.device()).unsqueeze();
 
     // シーン全体のSDFを計算するクロージャ的ヘルパー
-    let get_dist = |pos: Tensor<B, 2>| -> Tensor<B, 2> { scene_sdf_value(pos, centers.clone()) };
+    let get_dist = |pos: Tensor<B, 2>| -> Tensor<B, 2> {
+        scene_sdf_value(pos, centers.clone(), radius.clone())
+    };
 
     let nx = get_dist(p.clone() + e_x.clone()) - get_dist(p.clone() - e_x);
     let ny = get_dist(p.clone() + e_y.clone()) - get_dist(p.clone() - e_y);
@@ -67,18 +82,27 @@ fn calc_normal_scene<B: Backend>(p: Tensor<B, 2>, centers: Tensor<B, 2>) -> Tens
 }
 
 // 配列からSDF値を計算する関数 (ループ処理)
-fn scene_sdf_value<B: Backend>(p: Tensor<B, 2>, centers: Tensor<B, 2>) -> Tensor<B, 2> {
+fn scene_sdf_value<B: Backend>(
+    p: Tensor<B, 2>,
+    centers: Tensor<B, 2>,
+    radius: Tensor<B, 2>,
+) -> Tensor<B, 2> {
     let num_spheres = centers.dims()[0];
 
     // 最初の球の距離で初期化
-    let first_center = centers.clone().slice([0..1]).squeeze::<1>();
-    let mut min_dist = sdf_sphere(p.clone(), first_center, 0.4);
+    let first_center = centers.clone().slice([0..1]).reshape([3]);
+    let mut min_dist = sdf_sphere(
+        p.clone(),
+        first_center,
+        radius.clone().slice([0..1]).reshape([1]),
+    );
 
     // 2個目以降をSmoothMinで結合していく
     // (Rustのループでグラフを展開する)
     for i in 1..num_spheres {
-        let center = centers.clone().slice([i..(i + 1)]).squeeze::<1>(); // [3]
-        let dist = sdf_sphere(p.clone(), center, 0.4);
+        let center = centers.clone().slice([i..(i + 1)]).reshape([3]); // [3]
+        let radius = radius.clone().slice([i..(i + 1)]).reshape([1]); // [1]
+        let dist = sdf_sphere(p.clone(), center, radius);
         min_dist = smooth_min(min_dist, dist, 0.2);
     }
 
@@ -90,6 +114,7 @@ fn render<B: Backend>(
     ray_dir: Tensor<B, 2>,
     centers: Tensor<B, 2>,
     colors: Tensor<B, 2>,
+    radius: Tensor<B, 2>,
 ) -> Tensor<B, 2> {
     let num_rays = ray_org.dims()[0];
     let num_spheres = centers.dims()[0];
@@ -101,14 +126,14 @@ fn render<B: Backend>(
         let p = ray_org.clone() + ray_dir.clone() * t.clone();
 
         // シーン全体の距離
-        let dist = scene_sdf_value(p, centers.clone());
+        let dist = scene_sdf_value(p, centers.clone(), radius.clone());
         t = t + dist;
     }
 
     let p_final = ray_org + ray_dir * t;
 
     // 法線 (シーン全体)
-    let normal = calc_normal_scene(p_final.clone(), centers.clone());
+    let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone());
 
     // ライティング
     let light_dir = Tensor::<B, 1>::from_floats([-0.5, 0.5, -1.0], &device);
@@ -121,9 +146,10 @@ fn render<B: Backend>(
     let mut color_sum = Tensor::<B, 2>::zeros([num_rays, 3], &device);
 
     for i in 0..num_spheres {
-        let center = centers.clone().slice([i..(i + 1)]).squeeze::<1>();
-        let color = colors.clone().slice([i..(i + 1)]).squeeze::<1>();
-        let dist = sdf_sphere(p_final.clone(), center, 0.4);
+        let center = centers.clone().slice([i..(i + 1)]).reshape([3]);
+        let color = colors.clone().slice([i..(i + 1)]).reshape([3]);
+        let r = radius.clone().slice([i..(i + 1)]).reshape([1]);
+        let dist = sdf_sphere(p_final.clone(), center, r);
 
         // 重み計算 (指数関数的に柔らかくする)
         let weight = (-dist * 10.0).exp();
@@ -137,7 +163,7 @@ fn render<B: Backend>(
     let object_color = mixed_color * lighting;
 
     // マスク
-    let dist_scene = scene_sdf_value(p_final, centers);
+    let dist_scene = scene_sdf_value(p_final, centers, radius);
     let mask = (-dist_scene.powf_scalar(2.0) * 10.0).exp();
 
     object_color * mask
@@ -181,23 +207,27 @@ fn main() {
     let ray_dir =
         Tensor::<MyBackend, 1>::from_floats(dirs.as_slice(), &device).reshape([num_rays, 3]);
 
-    // --- Target Image Generation ---
+    // --- Target: 3つの球 (Radius違い) ---
+    // 左(赤,大), 中(緑,小), 右(青,中)
     let target_centers = Tensor::<MyBackend, 1>::from_floats(
         [
-            0.2, 0.2, 0.0, // 球1
-            -0.2, -0.2, 0.0, 0.0, 0.0, 0.0,
-        ], // 球2
+            -0.3, 0.0, 0.0, // 左
+            0.0, 0.0, 0.0, // 中
+            0.3, 0.0, 0.0,
+        ], // 右
         &device,
     )
     .reshape([3, 3]);
-    let target_colors = Tensor::<MyBackend, 1>::from_floats(
-        [
-            1.0, 0.0, 0.0, // 赤
-            0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-        ], // 青
+
+    let target_colors =
+        Tensor::<MyBackend, 1>::from_floats([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], &device)
+            .reshape([3, 3]);
+
+    let target_radii = Tensor::<MyBackend, 1>::from_floats(
+        [0.2, 0.15, 0.2], // 大きさもバラバラにしてみる
         &device,
     )
-    .reshape([3, 3]);
+    .reshape([3, 1]); // [3, 1]
 
     // 正解画像作成 (モデルを使わず直接関数を呼ぶ)
     let target_img = render(
@@ -205,6 +235,7 @@ fn main() {
         ray_dir.clone(),
         target_centers.clone(),
         target_colors.clone(),
+        target_radii.clone(),
     )
     .detach();
     save_tensor_as_image(
@@ -215,12 +246,14 @@ fn main() {
     );
 
     // --- Model Init ---
-    // 初期値: 中央付近に(N=3)(shape [3,N])
+    // 初期値: 中央付近に(N=3)(shape [N,3])
     let init_centers = Tensor::<MyBackend, 1>::zeros([9], &device).reshape([3, 3]);
 
     let init_logits = Tensor::<MyBackend, 1>::zeros([9], &device).reshape([3, 3]);
 
-    let mut model = SceneModel::new(init_centers, init_logits);
+    let init_radii = Tensor::<MyBackend, 1>::zeros([3], &device).reshape([3, 1]);
+
+    let mut model = SceneModel::new(init_centers, init_logits, init_radii);
     let mut optim = AdamConfig::new().init();
 
     println!("Start Optimization (Metaballs)...");
