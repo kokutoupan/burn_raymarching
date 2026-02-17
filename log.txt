@@ -18,6 +18,7 @@ Initial: Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_0.png
 Step 0: Loss = 0.112793, Pos = Tensor {
   data:
 [-0.5001008, -0.5001008, 3.696531e-7],
@@ -27,6 +28,7 @@ Step 0: Loss = 0.112793, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_10.png
 Step 10: Loss = 0.106445, Pos = Tensor {
   data:
 [-0.4090125, -0.40901312, 0.09387317],
@@ -36,6 +38,7 @@ Step 10: Loss = 0.106445, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_20.png
 Step 20: Loss = 0.106445, Pos = Tensor {
   data:
 [-0.4094947, -0.40950507, 0.0942603],
@@ -45,6 +48,7 @@ Step 20: Loss = 0.106445, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_30.png
 Step 30: Loss = 0.106444, Pos = Tensor {
   data:
 [-0.40967447, -0.41068587, 0.09513997],
@@ -54,6 +58,7 @@ Step 30: Loss = 0.106444, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_40.png
 Step 40: Loss = 0.086045, Pos = Tensor {
   data:
 [-0.18898728, -0.10890024, 0.28071842],
@@ -63,6 +68,7 @@ Step 40: Loss = 0.086045, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_50.png
 Step 50: Loss = 0.023317, Pos = Tensor {
   data:
 [0.23101397, 0.4039018, 0.32684278],
@@ -72,6 +78,7 @@ Step 50: Loss = 0.023317, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_60.png
 Step 60: Loss = 0.017334, Pos = Tensor {
   data:
 [0.23117672, 0.4038156, 0.3268816],
@@ -81,6 +88,7 @@ Step 60: Loss = 0.017334, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_70.png
 Step 70: Loss = 0.017334, Pos = Tensor {
   data:
 [0.23139685, 0.40370005, 0.32693392],
@@ -90,6 +98,7 @@ Step 70: Loss = 0.017334, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_80.png
 Step 80: Loss = 0.017334, Pos = Tensor {
   data:
 [0.23174277, 0.40352035, 0.327016],
@@ -99,6 +108,7 @@ Step 80: Loss = 0.017334, Pos = Tensor {
   kind:  "Float",
   dtype:  "f32",
 }
+Saved image to step_90.png
 Step 90: Loss = 0.017334, Pos = Tensor {
   data:
 [0.2326598, 0.40305087, 0.32723278],
