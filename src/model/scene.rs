@@ -2,7 +2,7 @@ use burn::module::{Module, Param};
 use burn::prelude::*;
 use burn::tensor::activation;
 
-use crate::model::sdf::smooth_min;
+use crate::model::sdf::soft_min_tensor;
 use crate::renderer::render;
 
 // --- 1. モデル定義 (Module) ---
@@ -54,16 +54,16 @@ pub fn scene_sdf_value<B: Backend>(
     let radius_row = radius.transpose(); // [1, M]
     let all_dists = dists - radius_row; // [N, M] - [1, M] -> [N, M]
 
-    let mut final_dist = all_dists.clone().slice([0..num_points, 0..1]);
-    for i in 1..num_spheres {
-        // 次の球の距離列を取得 [N, 1]
-        let next_dist = all_dists.clone().slice([0..num_points, i..(i + 1)]);
+    // let mut final_dist = all_dists.clone().slice([0..num_points, 0..1]);
+    // for i in 1..num_spheres {
+    //     // 次の球の距離列を取得 [N, 1]
+    //     let next_dist = all_dists.clone().slice([0..num_points, i..(i + 1)]);
 
-        // 結合
-        final_dist = smooth_min(final_dist, next_dist, 0.2);
-    }
+    //     // 結合
+    //     final_dist = smooth_min(final_dist, next_dist, 0.2);
+    // }
 
-    final_dist
+    soft_min_tensor(all_dists, 32.0)
 }
 
 pub fn calc_normal_scene<B: Backend>(
