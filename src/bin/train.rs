@@ -13,6 +13,8 @@ fn main() {
     type MyBackend = Autodiff<Wgpu>;
     let device = WgpuDevice::default();
 
+    const N: usize = 4;
+
     let width = 256;
     let height = 256;
 
@@ -41,7 +43,7 @@ fn main() {
     let (ray_org_3, ray_dir_3) = create_camera_rays::<MyBackend>(
         width,
         height,
-        [0.0, 2.5, -0.001],
+        [0.0, 2.5, -0.0001],
         [0.0, 0.0, 0.0],
         50.0,
         &device,
@@ -56,18 +58,18 @@ fn main() {
     // --- Model Init ---
     // 初期値: 中央付近に(N=3)(shape [N,3])
     let init_centers =
-        Tensor::<MyBackend, 1>::random([3, 3], Distribution::Uniform(-0.5, 0.5), &device)
-            .reshape([3, 3]);
+        Tensor::<MyBackend, 1>::random([N, 3], Distribution::Uniform(-0.5, 0.5), &device)
+            .reshape([N, 3]);
 
-    let init_logits = Tensor::<MyBackend, 1>::zeros([9], &device).reshape([3, 3]);
+    let init_logits = Tensor::<MyBackend, 1>::zeros([N * 3], &device).reshape([N, 3]);
 
-    let init_radii = Tensor::<MyBackend, 1>::from_floats([-0.5; 3], &device).reshape([3, 1]);
+    let init_radii = Tensor::<MyBackend, 1>::from_floats([-0.5; N], &device).reshape([N, 1]);
 
     let mut model = SceneModel::new(init_centers, init_logits, init_radii);
     let mut optim = AdamConfig::new().init();
 
     println!("Start Optimization (Metaballs)...");
-    let lr = 0.2;
+    let lr = 0.1;
 
     for i in 0..200 {
         let img1 = model.forward(ray_org_1.clone(), ray_dir_1.clone());

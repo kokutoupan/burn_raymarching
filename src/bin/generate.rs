@@ -37,7 +37,7 @@ fn main() {
     let (ray_org_3, ray_dir_3) = create_camera_rays::<MyBackend>(
         width,
         height,
-        [0.0, 2.5, -0.001],
+        [0.0, 2.5, -0.0001],
         [0.0, 0.0, 0.0],
         50.0,
         &device,
