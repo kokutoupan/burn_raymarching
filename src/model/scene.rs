@@ -2,8 +2,8 @@ use burn::module::{Module, Param};
 use burn::prelude::*;
 use burn::tensor::activation;
 
+use crate::model::sdf::{sdf_sphere, smooth_min};
 use crate::renderer::render;
-use crate::sdf::{sdf_sphere, smooth_min};
 
 // --- 1. モデル定義 (Module) ---
 #[derive(Module, Debug)]

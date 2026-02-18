@@ -1,5 +1,5 @@
-use crate::scene::{calc_normal_scene, scene_sdf_value};
-use crate::sdf::sdf_sphere;
+use crate::model::scene::{calc_normal_scene, scene_sdf_value};
+use crate::model::sdf::sdf_sphere;
 use burn::prelude::*;
 
 pub fn render<B: Backend>(
