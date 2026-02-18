@@ -1,11 +1,18 @@
 use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Autodiff, Wgpu};
-use burn::module::{Module, Param};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::tensor::Distribution;
 use burn::tensor::activation;
-use image::{ColorType, save_buffer};
+
+mod renderer;
+mod scene;
+mod sdf;
+mod util;
+
+use crate::renderer::render;
+use crate::scene::SceneModel;
+use crate::util::save_tensor_as_image;
 
 // --- 0. 依存なしの簡易算術ヘルパー ---
 mod math {
@@ -96,180 +103,6 @@ fn create_camera_rays<B: Backend>(
     (ray_org, ray_dir)
 }
 
-// --- 1. モデル定義 (Module) ---
-#[derive(Module, Debug)]
-struct SceneModel<B: Backend> {
-    centers: Param<Tensor<B, 2>>, // [N, 3]
-    colors: Param<Tensor<B, 2>>,  // [N, 3]
-    radius: Param<Tensor<B, 2>>,  // [N, 1] 半径 (スカラだが扱いやすくするため2次元配列)
-}
-
-impl<B: Backend> SceneModel<B> {
-    fn new(centers: Tensor<B, 2>, colors: Tensor<B, 2>, radius: Tensor<B, 2>) -> Self {
-        Self {
-            centers: Param::from_tensor(centers),
-            colors: Param::from_tensor(colors),
-            radius: Param::from_tensor(radius),
-        }
-    }
-
-    fn forward(&self, ray_org: Tensor<B, 2>, ray_dir: Tensor<B, 2>) -> Tensor<B, 2> {
-        let colors_rgb = activation::sigmoid(self.colors.val());
-        let centers = self.centers.val();
-        let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
-
-        render(ray_org, ray_dir, centers, colors_rgb, radius_positive)
-    }
-}
-
-// SDF
-fn sdf_sphere<B: Backend>(
-    p: Tensor<B, 2>,
-    center: Tensor<B, 1>,
-    radius: Tensor<B, 1>,
-) -> Tensor<B, 2> {
-    let diff = p - center.unsqueeze();
-    (diff.powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt() - radius.unsqueeze()
-}
-
-// k: 溶け具合 (0.1〜0.5くらい)
-fn smooth_min<B: Backend>(a: Tensor<B, 2>, b: Tensor<B, 2>, k: f32) -> Tensor<B, 2> {
-    // h = max(k - |a - b|, 0) / k
-    let h = (a.clone() - b.clone())
-        .abs()
-        .neg()
-        .add_scalar(k)
-        .clamp_min(0.0)
-        .div_scalar(k);
-
-    // result = min(a, b) - h^2 * k / 4
-    let min_ab = a.min_pair(b);
-    min_ab - h.powf_scalar(2.0) * (k * 0.25)
-}
-
-fn calc_normal_scene<B: Backend>(
-    p: Tensor<B, 2>,
-    centers: Tensor<B, 2>,
-    radius: Tensor<B, 2>,
-) -> Tensor<B, 2> {
-    let eps = 1e-4;
-    let e_x = Tensor::<B, 1>::from_floats([eps, 0.0, 0.0], &p.device()).unsqueeze();
-    let e_y = Tensor::<B, 1>::from_floats([0.0, eps, 0.0], &p.device()).unsqueeze();
-    let e_z = Tensor::<B, 1>::from_floats([0.0, 0.0, eps], &p.device()).unsqueeze();
-
-    // シーン全体のSDFを計算するクロージャ的ヘルパー
-    let get_dist = |pos: Tensor<B, 2>| -> Tensor<B, 2> {
-        scene_sdf_value(pos, centers.clone(), radius.clone())
-    };
-
-    let nx = get_dist(p.clone() + e_x.clone()) - get_dist(p.clone() - e_x);
-    let ny = get_dist(p.clone() + e_y.clone()) - get_dist(p.clone() - e_y);
-    let nz = get_dist(p.clone() + e_z.clone()) - get_dist(p.clone() - e_z);
-
-    let n = Tensor::cat(vec![nx, ny, nz], 1);
-    let len = (n.clone().powf_scalar(2.0).sum_dim(1) + 1e-6).sqrt();
-    n / len
-}
-
-// 配列からSDF値を計算する関数 (ループ処理)
-fn scene_sdf_value<B: Backend>(
-    p: Tensor<B, 2>,
-    centers: Tensor<B, 2>,
-    radius: Tensor<B, 2>,
-) -> Tensor<B, 2> {
-    let num_spheres = centers.dims()[0];
-
-    // 最初の球の距離で初期化
-    let first_center = centers.clone().slice([0..1]).reshape([3]);
-    let mut min_dist = sdf_sphere(
-        p.clone(),
-        first_center,
-        radius.clone().slice([0..1]).reshape([1]),
-    );
-
-    // 2個目以降をSmoothMinで結合していく
-    // (Rustのループでグラフを展開する)
-    for i in 1..num_spheres {
-        let center = centers.clone().slice([i..(i + 1)]).reshape([3]); // [3]
-        let radius = radius.clone().slice([i..(i + 1)]).reshape([1]); // [1]
-        let dist = sdf_sphere(p.clone(), center, radius);
-        min_dist = smooth_min(min_dist, dist, 0.2);
-    }
-
-    min_dist
-}
-
-fn render<B: Backend>(
-    ray_org: Tensor<B, 2>,
-    ray_dir: Tensor<B, 2>,
-    centers: Tensor<B, 2>,
-    colors: Tensor<B, 2>,
-    radius: Tensor<B, 2>,
-) -> Tensor<B, 2> {
-    let num_rays = ray_org.dims()[0];
-    let num_spheres = centers.dims()[0];
-    let device = ray_org.device();
-    let mut t = Tensor::<B, 2>::zeros([num_rays, 1], &device);
-
-    // Ray Marching Loop
-    for _ in 0..40 {
-        let p = ray_org.clone() + ray_dir.clone() * t.clone();
-
-        // シーン全体の距離
-        let dist = scene_sdf_value(p, centers.clone(), radius.clone());
-        t = t + dist;
-    }
-
-    let p_final = ray_org + ray_dir * t;
-
-    // 法線 (シーン全体)
-    let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone());
-
-    // ライティング
-    let light_dir = Tensor::<B, 1>::from_floats([-0.5, 0.5, -1.0], &device);
-    let light_dir = light_dir.clone() / (light_dir.powf_scalar(2.0).sum().sqrt() + 1e-6);
-    let diffuse = (normal * light_dir.unsqueeze()).sum_dim(1).clamp_min(0.0);
-    let lighting = diffuse + 0.1;
-    // let lighting = Tensor::<B, 2>::ones([num_rays, 1], &device);
-
-    // 3. Color Blending (N球混合)
-    let mut weight_sum = Tensor::<B, 2>::zeros([num_rays, 1], &device) + 1e-5;
-    let mut color_sum = Tensor::<B, 2>::zeros([num_rays, 3], &device);
-
-    for i in 0..num_spheres {
-        let center = centers.clone().slice([i..(i + 1)]).reshape([3]);
-        let color = colors.clone().slice([i..(i + 1)]).reshape([3]);
-        let r = radius.clone().slice([i..(i + 1)]).reshape([1]);
-        let dist = sdf_sphere(p_final.clone(), center, r);
-
-        // 重み計算 (指数関数的に柔らかくする)
-        let weight = (-dist * 10.0).exp();
-
-        weight_sum = weight_sum + weight.clone();
-        color_sum = color_sum + color.unsqueeze() * weight;
-    }
-
-    let mixed_color = color_sum / weight_sum;
-
-    let object_color = mixed_color * lighting;
-
-    // マスク
-    let dist_scene = scene_sdf_value(p_final, centers, radius);
-    let mask = (-dist_scene.powf_scalar(2.0) * 10.0).exp();
-
-    object_color * mask
-}
-
-fn save_tensor_as_image<B: Backend>(tensor: Tensor<B, 2>, width: u32, height: u32, path: &str) {
-    let floats: Vec<f32> = tensor.into_data().to_vec::<f32>().unwrap();
-    let pixels: Vec<u8> = floats
-        .iter()
-        .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
-        .collect();
-    save_buffer(path, &pixels, width, height, ColorType::Rgb8).expect("Failed to save image");
-    println!("Saved image to {}", path);
-}
-
 fn main() {
     // Autodiffバックエンドの定義
     type MyBackend = Autodiff<Wgpu>;
@@ -277,7 +110,6 @@ fn main() {
 
     let width = 256;
     let height = 256;
-    let num_rays = width * height;
 
     // --- 1. カメラ設定 (3視点) ---
     // Camera 1: 正面
