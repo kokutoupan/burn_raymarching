@@ -3,7 +3,7 @@ use burn::prelude::*;
 use burn::tensor::activation;
 
 use crate::model::sdf::soft_min_tensor;
-use crate::renderer::render;
+use crate::renderer_diff::render_diff;
 
 // --- 1. モデル定義 (Module) ---
 #[derive(Module, Debug)]
@@ -27,7 +27,7 @@ impl<B: Backend> SceneModel<B> {
         let centers = self.centers.val();
         let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
 
-        render(ray_org, ray_dir, centers, colors_rgb, radius_positive)
+        render_diff(ray_org, ray_dir, centers, colors_rgb, radius_positive)
     }
 }
 

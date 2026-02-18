@@ -104,11 +104,56 @@ fn main() {
 
         // --- Forward & Backward ---
         let output = model.forward(batch_ro, batch_rd);
-        let loss = (output - batch_target).powf_scalar(2.0).mean();
+
+        // --- Loss計算 ---
+        let diff = output - batch_target.clone();
+        let mse_map = diff.clone().powf_scalar(2.0);
+        let abs_diff = diff.abs();
+
+        // 1. 物体領域(黒くない画素)の判定
+        let target_sum = batch_target.sum_dim(1);
+        let target_mask = target_sum.greater_elem(0.01); // [Batch, 1] Bool
+
+        // 2. 混合Loss (物体領域は L1 で厳しく、背景は MSE)
+        let mixed_loss_map = mse_map.mask_where(
+            target_mask,     // condition
+            abs_diff * 10.0, // replacement (L1 * 10)
+        );
+        let mut loss = mixed_loss_map.mean();
+
+        // 3. 反発項 (0除算/無限勾配回避)
+        let centers = model.centers.val();
+        let c1 = centers.clone().unsqueeze_dim::<3>(1);
+        let c2 = centers.clone().unsqueeze_dim::<3>(0);
+        let dist_sq = (c1 - c2).powf_scalar(2.0).sum_dim(2);
+        let dist_matrix = (dist_sq + 1e-6).sqrt().squeeze_dim(2);
+        let eye = Tensor::<MyBackend, 2>::eye(N, &device);
+        let repulsion_loss = (dist_matrix + eye * 100.0 + 1e-6).powf_scalar(-1.0).mean();
+        loss = loss + repulsion_loss * 0.0002;
+
+        // 4. 半径の巨大化ペナルティ (型エラー修正版)
+        let radius_val = activation::softplus(model.radius.val(), 1.0);
+        let r_mask = radius_val.clone().greater_elem(1.0); // 1.0を超えたら罰則
+        let radius_penalty = Tensor::zeros_like(&radius_val)
+            .mask_where(r_mask, radius_val.powf_scalar(2.0))
+            .mean();
+        loss = loss + radius_penalty * 0.1;
+
+        // 5. 画面外への逃亡防止
+        let center_penalty = model.centers.val().powf_scalar(2.0).mean();
+        loss = loss + center_penalty * 0.001;
+        // let loss = mse_loss;
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
-        model = optim.step(lr, model, grads);
+        let current_lr = if i < 1000 {
+            lr
+        } else if i < 2000 {
+            lr * 0.2
+        } else {
+            lr * 0.04
+        };
+        model = optim.step(current_lr, model, grads);
 
         // --- ログ出力 & 画像保存 ---
         if i % 100 == 0 {
