@@ -17,7 +17,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 20;
+    const N: usize = 100;
     const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
@@ -181,10 +181,47 @@ fn main() {
         activation::sigmoid(model.colors.val()),
         activation::softplus(model.radius.val(), 1.0),
     );
-    println!("Rendering final images...");
-    save_tiled_preview(&model, ro1, rd1, width, height, "steps/final_1.png");
-    save_tiled_preview(&model, ro2, rd2, width, height, "steps/final_2.png");
-    save_tiled_preview(&model, ro3, rd3, width, height, "steps/final_3.png");
+    println!("Exporting parameters to scene.json...");
+
+    // 1. パラメータを確定値(物理量)に変換して取り出す
+    let centers_tensor = model.centers.val();
+    let colors_tensor = activation::sigmoid(model.colors.val()); // 色は0~1に
+    let radii_tensor = activation::softplus(model.radius.val(), 1.0); // 半径は正の値に
+
+    // CPUに転送
+    let centers_vec: Vec<f32> = centers_tensor
+        .into_data()
+        .convert::<f32>()
+        .to_vec()
+        .unwrap();
+    let colors_vec: Vec<f32> = colors_tensor.into_data().convert::<f32>().to_vec().unwrap();
+    let radii_vec: Vec<f32> = radii_tensor.into_data().convert::<f32>().to_vec().unwrap();
+
+    // 2. 保存用の構造体を作る
+    #[derive(serde::Serialize)]
+    struct SceneData {
+        num_spheres: usize,
+        centers: Vec<f32>, // [x, y, z, x, y, z, ...]
+        colors: Vec<f32>,  // [r, g, b, r, g, b, ...]
+        radii: Vec<f32>,   // [r, r, ...]
+    }
+
+    let data = SceneData {
+        num_spheres: N,
+        centers: centers_vec,
+        colors: colors_vec,
+        radii: radii_vec,
+    };
+
+    // 3. JSONで保存
+    let file = std::fs::File::create("scene.json").expect("Failed to create file");
+    serde_json::to_writer_pretty(file, &data).expect("Failed to write json");
+
+    println!("Export done. Run `cargo run --release --bin viewer`");
+    // println!("Rendering final images...");
+    // save_tiled_preview(&model, ro1, rd1, width, height, "steps/final_1.png");
+    // save_tiled_preview(&model, ro2, rd2, width, height, "steps/final_2.png");
+    // save_tiled_preview(&model, ro3, rd3, width, height, "steps/final_3.png");
 }
 
 // --- ヘルパー: タイル分割レンダリング (VRAM節約) ---
