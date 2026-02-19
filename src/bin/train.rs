@@ -129,7 +129,7 @@ fn main() {
         let dist_matrix = (dist_sq + 1e-6).sqrt().squeeze_dim(2);
         let eye = Tensor::<MyBackend, 2>::eye(N, &device);
         let repulsion_loss = (dist_matrix + eye * 100.0 + 1e-6).powf_scalar(-1.0).mean();
-        loss = loss + repulsion_loss * 0.0002;
+        loss = loss + repulsion_loss * 0.0001;
 
         // 4. 半径の巨大化ペナルティ (型エラー修正版)
         let radius_val = activation::softplus(model.radius.val(), 1.0);
@@ -141,7 +141,7 @@ fn main() {
 
         // 5. 画面外への逃亡防止
         let center_penalty = model.centers.val().powf_scalar(2.0).mean();
-        loss = loss + center_penalty * 0.001;
+        loss = loss + center_penalty * 0.05;
         // let loss = mse_loss;
 
         let grads = loss.backward();

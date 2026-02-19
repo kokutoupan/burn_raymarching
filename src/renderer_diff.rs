@@ -34,7 +34,11 @@ pub fn render_diff<B: Backend>(
     // 最終的な交点 (これで centers と radius を動かすフィードバックが復活する)
     let p_final = ray_org + ray_dir * t_final;
 
-    let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone());
+    let normal = calc_normal_scene(
+        p_final.clone().detach(),
+        centers.clone().detach(),
+        radius.clone().detach(),
+    );
 
     let light_dir_vec: [f32; 3] = [-0.5, 0.5, -1.0];
     // 正規化
