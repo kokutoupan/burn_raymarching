@@ -3,12 +3,13 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 
+use glam::Vec3;
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowId}; // 数学ライブラリを使用
 
 // --- データ構造 ---
 #[derive(serde::Deserialize)]
@@ -34,6 +35,50 @@ struct Uniforms {
     resolution: [f32; 2],
     time: f32,
     padding: f32,
+    cam_pos: [f32; 3],
+    padding1: f32,
+    cam_forward: [f32; 3],
+    padding2: f32,
+    cam_up: [f32; 3],
+    padding3: f32,
+}
+
+// --- 入力とカメラ ---
+#[derive(Default)]
+struct InputState {
+    forward: bool,
+    backward: bool,
+    left: bool,
+    right: bool,
+    up: bool,
+    down: bool,
+    turn_left: bool,
+    turn_right: bool,
+    turn_up: bool,
+    turn_down: bool,
+}
+
+struct Camera {
+    pos: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl Camera {
+    fn forward(&self) -> Vec3 {
+        Vec3::new(
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
+        )
+        .normalize()
+    }
+    fn right(&self) -> Vec3 {
+        self.forward().cross(Vec3::Y).normalize()
+    }
+    fn up(&self) -> Vec3 {
+        self.right().cross(self.forward()).normalize()
+    }
 }
 
 // --- アプリケーションの状態 ---
@@ -53,7 +98,10 @@ struct State {
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     start_time: std::time::Instant,
+    last_update: std::time::Instant,
     uniforms: Uniforms,
+    camera: Camera,
+    input: InputState,
 }
 
 impl App {
@@ -69,7 +117,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let window_attributes = Window::default_attributes()
-                .with_title("Pure Wgpu Raymarching (wgpu 28)")
+                .with_title("Pure Wgpu Raymarching (WASD Camera)")
                 .with_inner_size(winit::dpi::LogicalSize::new(800.0, 800.0));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
@@ -92,29 +140,68 @@ impl ApplicationHandler for App {
         };
 
         match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        state: ElementState::Pressed,
-                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        state: key_state,
+                        physical_key: PhysicalKey::Code(keycode),
                         ..
                     },
                 ..
-            } => event_loop.exit(),
-
-            WindowEvent::Resized(physical_size) => {
-                state.resize(physical_size);
+            } => {
+                let is_pressed = key_state == ElementState::Pressed;
+                match keycode {
+                    KeyCode::KeyW => state.input.forward = is_pressed,
+                    KeyCode::KeyS => state.input.backward = is_pressed,
+                    KeyCode::KeyA => state.input.left = is_pressed,
+                    KeyCode::KeyD => state.input.right = is_pressed,
+                    KeyCode::KeyE | KeyCode::Space => state.input.up = is_pressed,
+                    KeyCode::KeyQ | KeyCode::ShiftLeft => state.input.down = is_pressed,
+                    KeyCode::ArrowLeft => state.input.turn_left = is_pressed,
+                    KeyCode::ArrowRight => state.input.turn_right = is_pressed,
+                    KeyCode::ArrowUp => state.input.turn_up = is_pressed,
+                    KeyCode::ArrowDown => state.input.turn_down = is_pressed,
+                    KeyCode::Escape => {
+                        if is_pressed {
+                            event_loop.exit()
+                        }
+                    }
+                    _ => {}
+                }
             }
-
+            WindowEvent::Resized(physical_size) => state.resize(physical_size),
             WindowEvent::RedrawRequested => {
                 state.update();
+                if let Some(window) = self.window.as_ref() {
+                    let pos = state.camera.pos;
+                    // ラジアンから度数法(Degrees)に変換すると直感的にわかりやすいです
+                    let yaw = state.camera.yaw.to_degrees();
+                    let pitch = state.camera.pitch.to_degrees();
+
+                    window.set_title(&format!(
+                        "Viewer | Pos: ({:.2}, {:.2}, {:.2}) | Yaw: {:.0}°, Pitch: {:.0}°",
+                        pos.x, pos.y, pos.z, yaw, pitch
+                    ));
+                }
                 match state.render() {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     Err(e) => eprintln!("{:?}", e),
                 }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+
+                // ★追加: 60FPS固定（GPU負荷の抑制）
+                let target_frametime = std::time::Duration::from_secs_f64(1.0 / 60.0);
+                let elapsed = state.last_update.elapsed();
+                if elapsed < target_frametime {
+                    // 16.6ms 経っていなければ、残りの時間はスレッドを休ませる
+                    std::thread::sleep(target_frametime - elapsed);
+                }
+
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -128,14 +215,12 @@ impl State {
     async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        // 1. Instance (wgpu 28: 参照渡し & Default)
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
         let surface = instance.create_surface(window.clone()).unwrap();
-
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -145,7 +230,6 @@ impl State {
             .await
             .unwrap();
 
-        // 4. Device & Queue (wgpu 28: 1引数 & trace等デフォルト埋め合わせ)
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -205,11 +289,25 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // カメラの初期位置 (z=-2.5から +Z方向を見る)
+        let camera = Camera {
+            pos: Vec3::new(0.0, 0.0, -2.5),
+            yaw: std::f32::consts::PI / 2.0,
+            pitch: 0.0,
+        };
+
         let uniforms = Uniforms {
             resolution: [size.width as f32, size.height as f32],
             time: 0.0,
             padding: 0.0,
+            cam_pos: camera.pos.into(),
+            padding1: 0.0,
+            cam_forward: camera.forward().into(),
+            padding2: 0.0,
+            cam_up: camera.up().into(),
+            padding3: 0.0,
         };
+
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
@@ -237,7 +335,6 @@ impl State {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        // wgpu 28: ReadOnlyStorage から Storage { read_only: true } へ変更
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -263,7 +360,6 @@ impl State {
             label: Some("bind_group"),
         });
 
-        // wgpu 28: push_constant_ranges は削除
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
             bind_group_layouts: &[&bind_group_layout],
@@ -275,13 +371,13 @@ impl State {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"), // Option<&str> に変更
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"), // Option<&str> に変更
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
@@ -292,7 +388,7 @@ impl State {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None, // multiview -> multiview_mask に変更
+            multiview_mask: None,
             cache: None,
         });
 
@@ -307,7 +403,10 @@ impl State {
             uniform_buffer,
             bind_group,
             start_time: std::time::Instant::now(),
+            last_update: std::time::Instant::now(),
             uniforms,
+            camera,
+            input: InputState::default(),
         }
     }
 
@@ -317,13 +416,63 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-
             self.uniforms.resolution = [new_size.width as f32, new_size.height as f32];
         }
     }
 
     fn update(&mut self) {
+        let now = std::time::Instant::now();
+        let dt = (now - self.last_update).as_secs_f32();
+        self.last_update = now;
+
+        // カメラ移動と回転の速度
+        let move_speed = 3.0 * dt;
+        let turn_speed = 1.5 * dt;
+
+        let forward = self.camera.forward();
+        let right = self.camera.right();
+        let up = Vec3::Y; // 上下移動は常にワールドY軸とする
+
+        if self.input.forward {
+            self.camera.pos += forward * move_speed;
+        }
+        if self.input.backward {
+            self.camera.pos -= forward * move_speed;
+        }
+        if self.input.left {
+            self.camera.pos -= right * move_speed;
+        }
+        if self.input.right {
+            self.camera.pos += right * move_speed;
+        }
+        if self.input.up {
+            self.camera.pos -= up * move_speed;
+        }
+        if self.input.down {
+            self.camera.pos += up * move_speed;
+        }
+
+        if self.input.turn_left {
+            self.camera.yaw -= turn_speed;
+        }
+        if self.input.turn_right {
+            self.camera.yaw += turn_speed;
+        }
+        if self.input.turn_up {
+            self.camera.pitch -= turn_speed;
+        }
+        if self.input.turn_down {
+            self.camera.pitch += turn_speed;
+        }
+
+        // 真上・真下を見すぎないようにクランプ (-89度 ～ 89度)
+        self.camera.pitch = self.camera.pitch.clamp(-1.55, 1.55);
+
         self.uniforms.time = self.start_time.elapsed().as_secs_f32();
+        self.uniforms.cam_pos = self.camera.pos.into();
+        self.uniforms.cam_forward = self.camera.forward().into();
+        self.uniforms.cam_up = self.camera.up().into();
+
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -336,7 +485,6 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -353,14 +501,13 @@ impl State {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None, // wgpu 28 で追加された必須フィールド
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 multiview_mask: None,
             });
-
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..6, 0..1);
@@ -368,7 +515,6 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
         Ok(())
     }
 }
@@ -377,7 +523,6 @@ fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-
     let mut app = App::new();
     event_loop.run_app(&mut app).unwrap();
 }
