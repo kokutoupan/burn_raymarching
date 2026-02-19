@@ -17,7 +17,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 100;
+    const N: usize = 20;
     const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
@@ -98,51 +98,76 @@ fn main() {
         .int(); // float -> int
 
         // インデックスを使ってデータを抽出 (Gather)
-        let batch_ro = train_rays_o.clone().select(0, indices.clone());
-        let batch_rd = train_rays_d.clone().select(0, indices.clone());
-        let batch_target = train_targets.clone().select(0, indices);
+        let batch_ro = train_rays_o.clone().select(0, indices.clone()).detach();
+        let batch_rd = train_rays_d.clone().select(0, indices.clone()).detach();
+        let batch_target = train_targets.clone().select(0, indices).detach();
 
         // --- Forward & Backward ---
         let output = model.forward(batch_ro, batch_rd);
 
+        // ==========================================
         // --- Loss計算 ---
+        // ==========================================
+
+        // 1. 画像再構成Loss (メインの学習目標)
+        // ------------------------------------------
         let diff = output - batch_target.clone();
         let mse_map = diff.clone().powf_scalar(2.0);
         let abs_diff = diff.abs();
 
-        // 1. 物体領域(黒くない画素)の判定
         let target_sum = batch_target.sum_dim(1);
-        let target_mask = target_sum.greater_elem(0.01); // [Batch, 1] Bool
+        let target_mask = target_sum.greater_elem(0.01); // 物体領域の判定
 
-        // 2. 混合Loss (物体領域は L1 で厳しく、背景は MSE)
-        let mixed_loss_map = mse_map.mask_where(
-            target_mask,     // condition
-            abs_diff * 10.0, // replacement (L1 * 10)
-        );
-        let mut loss = mixed_loss_map.mean();
+        // 物体領域は厳しく(L1 * 10)、背景は緩く(MSE)
+        let reconstruction_loss = mse_map.mask_where(target_mask, abs_diff * 10.0).mean();
+        let mut loss = reconstruction_loss;
 
-        // 3. 反発項 (0除算/無限勾配回避)
+        // 2. 幾何学的制約 (ペナルティ項)
+        // ------------------------------------------
         let centers = model.centers.val();
+        let radii = activation::softplus(model.radius.val(), 1.0);
+
+        // [a] 半径ペナルティ: 球が大きくなりすぎるのを防ぐ
+        let r_mask = radii.clone().greater_elem(1.0); // 半径が1.0を超えたら罰則
+        let radius_penalty = Tensor::zeros_like(&radii)
+            .mask_where(r_mask, radii.clone().powf_scalar(2.0))
+            .mean();
+        loss = loss + radius_penalty * 0.1;
+
+        // [b] 原点引力: 球がバラバラに散らばるのを防ぐ
+        let center_penalty = centers.clone().powf_scalar(2.0).mean();
+        loss = loss + center_penalty * 0.1; // Billboard対策で少し強めに設定(0.001 -> 0.05)
+
+        // [c] カメラ近接バリア (Billboard Effect対策の要)
+        let centers_val = model.centers.val();
+
+        // 中心の原点からの距離: [N, 3] -> [N, 1]
+        let dist_from_origin = centers_val.powf_scalar(2.0).sum_dim(1).sqrt();
+
+        // 球の表面が一番外側に張り出す距離 (中心距離 + 半径)
+        let max_reach = dist_from_origin + radii;
+
+        // 境界線 1.5 を超えているかどうかのマスク
+        let out_of_bounds_mask = max_reach.clone().greater_elem(1.2);
+
+        // はみ出した距離の2乗をペナルティにする (なめらかに勾配が効くように)
+        let excess_dist = max_reach.clone() - 1.1;
+        let penalty_values = excess_dist.powf_scalar(2.0);
+
+        let camera_proximity_penalty = Tensor::zeros_like(&max_reach)
+            .mask_where(out_of_bounds_mask, penalty_values)
+            .mean();
+
+        loss = loss + camera_proximity_penalty * 5.0;
+        // [d] 反発項: 球同士の重なりを防ぐ
+        // ※強すぎるとバリアに押し付けられてズルを誘発するので、弱めに設定
         let c1 = centers.clone().unsqueeze_dim::<3>(1);
         let c2 = centers.clone().unsqueeze_dim::<3>(0);
         let dist_sq = (c1 - c2).powf_scalar(2.0).sum_dim(2);
         let dist_matrix = (dist_sq + 1e-6).sqrt().squeeze_dim(2);
         let eye = Tensor::<MyBackend, 2>::eye(N, &device);
         let repulsion_loss = (dist_matrix + eye * 100.0 + 1e-6).powf_scalar(-1.0).mean();
-        loss = loss + repulsion_loss * 0.0001;
-
-        // 4. 半径の巨大化ペナルティ (型エラー修正版)
-        let radius_val = activation::softplus(model.radius.val(), 1.0);
-        let r_mask = radius_val.clone().greater_elem(1.0); // 1.0を超えたら罰則
-        let radius_penalty = Tensor::zeros_like(&radius_val)
-            .mask_where(r_mask, radius_val.powf_scalar(2.0))
-            .mean();
-        loss = loss + radius_penalty * 0.1;
-
-        // 5. 画面外への逃亡防止
-        let center_penalty = model.centers.val().powf_scalar(2.0).mean();
-        loss = loss + center_penalty * 0.05;
-        // let loss = mse_loss;
+        loss = loss + repulsion_loss * 0.00001; // 極力弱める(0.0002 -> 0.00001)
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
