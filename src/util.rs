@@ -5,7 +5,7 @@ pub fn save_tensor_as_image<B: Backend>(tensor: Tensor<B, 2>, width: u32, height
     let floats: Vec<f32> = tensor.into_data().to_vec::<f32>().unwrap();
     let pixels: Vec<u8> = floats
         .iter()
-        .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
+        .map(|&x| (x.powf(1.0 / 2.2).clamp(0.0, 1.0) * 255.0) as u8)
         .collect();
 
     if let Some(parent) = std::path::Path::new(path).parent() {
@@ -23,7 +23,10 @@ pub fn load_image_as_tensor<B: Backend>(path: &str, device: &B::Device) -> Tenso
     let (width, height) = img.dimensions();
     let pixels = img.to_rgb8().into_raw();
 
-    let floats: Vec<f32> = pixels.iter().map(|&x| (x as f32) / 255.0).collect();
+    let floats: Vec<f32> = pixels
+        .iter()
+        .map(|&x| ((x as f32) / 255.0).powf(2.2))
+        .collect();
 
     // [H*W, 3] -> [NumRays, 3]
     Tensor::<B, 1>::from_floats(floats.as_slice(), device).reshape([(width * height) as usize, 3])

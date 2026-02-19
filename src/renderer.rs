@@ -39,18 +39,13 @@ pub fn render<B: Backend>(
 
     let lighting = diffuse + 0.1;
 
-    // Step A: 全レイと全球の距離行列 [N, M] を計算
-    // p_final: [N, 1, 3]
-    let p_expanded = p_final.clone().unsqueeze_dim::<3>(1);
-    // centers: [1, M, 3]
-    let c_expanded = centers.clone().unsqueeze_dim::<3>(0);
+    // Step A: 全レイと全球の距離行列 [N, M] を計算 (展開公式によるバグ回避＆高速化版)
+    let p_sq = p_final.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
+    let c_sq = centers.clone().powf_scalar(2.0).sum_dim(1).transpose(); // [1, M]
+    let p_dot_c = p_final.clone().matmul(centers.clone().transpose()); // [N, M]
 
-    // diff: [N, M, 3]
-    let diff = p_expanded - c_expanded;
-
-    // dists: [N, M] (各レイから各球への距離)
-    let dists_sq = diff.powf_scalar(2.0).sum_dim(2).squeeze_dim(2);
-    let dists = dists_sq.sqrt() - radius.clone().transpose(); // [N, M] - [1, M] -> [N, M]
+    let dists_sq = p_sq + c_sq - p_dot_c * 2.0; // [N, M]
+    let dists = dists_sq.clamp_min(1e-6).sqrt() - radius.clone().transpose(); // [N, M]
 
     // Step B: 重みの計算 [N, M]
     // weight = exp(-dist * 10.0)

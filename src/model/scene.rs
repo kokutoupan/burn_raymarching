@@ -31,37 +31,22 @@ impl<B: Backend> SceneModel<B> {
     }
 }
 
-// 配列からSDF値を計算する関数 (ループ処理)
 pub fn scene_sdf_value<B: Backend>(
     p: Tensor<B, 2>,       // [N, 3]
     centers: Tensor<B, 2>, // [M, 3]
     radius: Tensor<B, 2>,  // [M, 1]
 ) -> Tensor<B, 2> {
-    let num_spheres = centers.dims()[0];
-    let num_points = p.dims()[0];
+    // 展開公式 (||p - c||^2 = ||p||^2 + ||c||^2 - 2p*c) を使って距離を計算
+    let p_sq = p.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
+    let c_sq = centers.clone().powf_scalar(2.0).sum_dim(1).transpose(); // [1, M]
+    let p_dot_c = p.matmul(centers.transpose()); // [N, M]
 
-    let p_expanded = p.unsqueeze_dim::<3>(1);
-    let centers_expanded = centers.unsqueeze_dim::<3>(0);
-    // [N, 1, 3] - [1, M, 3] = [N, M, 3]
-    let diff = p_expanded - centers_expanded;
-    let dists = diff
-        .powf_scalar(2.0)
-        .sum_dim(2) // [N, M, 1]
-        .sqrt()
-        .squeeze_dim(2); // [N, M]
+    let dists_sq = p_sq + c_sq - p_dot_c * 2.0; // [N, M]
+    let dists = dists_sq.clamp_min(1e-6).sqrt(); // [N, M]
 
     // 半径を引く (radius: [M, 1] -> [1, M] にして引く)
     let radius_row = radius.transpose(); // [1, M]
     let all_dists = dists - radius_row; // [N, M] - [1, M] -> [N, M]
-
-    // let mut final_dist = all_dists.clone().slice([0..num_points, 0..1]);
-    // for i in 1..num_spheres {
-    //     // 次の球の距離列を取得 [N, 1]
-    //     let next_dist = all_dists.clone().slice([0..num_points, i..(i + 1)]);
-
-    //     // 結合
-    //     final_dist = smooth_min(final_dist, next_dist, 0.2);
-    // }
 
     soft_min_tensor(all_dists, 32.0)
 }

@@ -17,7 +17,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 20;
+    const N: usize = 100;
     const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
@@ -159,12 +159,15 @@ fn main() {
             .mean();
 
         loss = loss + camera_proximity_penalty * 5.0;
-        // [d] 反発項: 球同士の重なりを防ぐ
-        // ※強すぎるとバリアに押し付けられてズルを誘発するので、弱めに設定
-        let c1 = centers.clone().unsqueeze_dim::<3>(1);
-        let c2 = centers.clone().unsqueeze_dim::<3>(0);
-        let dist_sq = (c1 - c2).powf_scalar(2.0).sum_dim(2);
-        let dist_matrix = (dist_sq + 1e-6).sqrt().squeeze_dim(2);
+
+        // [d] 反発項: 球同士の重なりを防ぐ (展開公式による高速化版)
+        let centers_val = model.centers.val();
+        let c_sq_val = centers_val.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
+        let c_sq_t = c_sq_val.clone().transpose(); // [1, N]
+        let c_dot_c = centers_val.clone().matmul(centers_val.clone().transpose()); // [N, N]
+
+        let dist_sq = c_sq_val + c_sq_t - c_dot_c * 2.0; // [N, N]
+        let dist_matrix = dist_sq.clamp_min(1e-6).sqrt(); // [N, N]
         let eye = Tensor::<MyBackend, 2>::eye(N, &device);
         let repulsion_loss = (dist_matrix + eye * 100.0 + 1e-6).powf_scalar(-1.0).mean();
         loss = loss + repulsion_loss * 0.00001; // 極力弱める(0.0002 -> 0.00001)

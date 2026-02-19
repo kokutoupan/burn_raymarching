@@ -1,12 +1,12 @@
+use burn::backend::Wgpu;
 use burn::backend::wgpu::WgpuDevice;
-use burn::backend::{Autodiff, Wgpu};
 use burn::prelude::*;
 use burn_raymarching::camera::create_camera_rays;
 use burn_raymarching::renderer::render;
 use burn_raymarching::util::save_tensor_as_image;
 
 fn main() {
-    type MyBackend = Autodiff<Wgpu>;
+    type MyBackend = Wgpu;
     let device = WgpuDevice::default();
 
     let width = 256;
@@ -70,8 +70,7 @@ fn main() {
         target_centers.clone(),
         target_colors.clone(),
         target_radii.clone(),
-    )
-    .detach();
+    );
     save_tensor_as_image(
         target_img_1,
         width as u32,
@@ -85,8 +84,7 @@ fn main() {
         target_centers.clone(),
         target_colors.clone(),
         target_radii.clone(),
-    )
-    .detach();
+    );
     save_tensor_as_image(
         target_img_2,
         width as u32,
@@ -100,8 +98,7 @@ fn main() {
         target_centers.clone(),
         target_colors.clone(),
         target_radii.clone(),
-    )
-    .detach();
+    );
     save_tensor_as_image(
         target_img_3,
         width as u32,
