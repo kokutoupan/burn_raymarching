@@ -18,10 +18,21 @@ pub fn render_diff<B: Backend>(
     for _ in 0..40 {
         let p = ray_org.clone() + ray_dir.clone() * t.clone();
         let dist = scene_sdf_value(p, centers.clone(), radius.clone());
-        t = t + dist;
+        t = (t + dist).detach();
     }
 
-    let p_final = ray_org + ray_dir * t;
+    // 2. 勾配接続フェーズ: 最後の1歩だけ計算グラフに乗せる
+    // 見つけた交点付近の座標 (detach済み)
+    let p_approx = ray_org.clone() + ray_dir.clone() * t.clone();
+
+    // ★ここがミソ: この SDF 評価には centers と radius の勾配が乗る
+    let dist_last = scene_sdf_value(p_approx, centers.clone(), radius.clone());
+
+    // detach された t に、勾配付きの dist_last を足すことで勾配を「再接続」する
+    let t_final = t + dist_last;
+
+    // 最終的な交点 (これで centers と radius を動かすフィードバックが復活する)
+    let p_final = ray_org + ray_dir * t_final;
 
     let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone());
 
