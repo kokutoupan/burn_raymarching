@@ -6,6 +6,8 @@ use burn::prelude::*;
 use burn::tensor::Distribution;
 use burn::tensor::activation;
 
+use rand::RngExt;
+
 use burn_raymarching::camera::create_camera_rays;
 use burn_raymarching::model::scene::SceneModel;
 use burn_raymarching::util::{load_image_as_tensor, save_tensor_as_image};
@@ -17,7 +19,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 100;
+    const N: usize = 20;
     const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
@@ -64,12 +66,39 @@ fn main() {
 
     // --- 2. データセットの統合 ---
     // 全ての視点のデータを結合して、巨大な「学習用プール」を作る
-    let train_rays_o = Tensor::cat(vec![ro1.clone(), ro2.clone(), ro3.clone()], 0); // [TotalPixels, 3]
-    let train_rays_d = Tensor::cat(vec![rd1.clone(), rd2.clone(), rd3.clone()], 0);
-    let train_targets = Tensor::cat(vec![t1, t2, t3], 0);
+    let train_rays_o = Tensor::cat(vec![ro1.clone(), ro2.clone(), ro3.clone()], 0).detach(); // [TotalPixels, 3]
+    let train_rays_d = Tensor::cat(vec![rd1.clone(), rd2.clone(), rd3.clone()], 0).detach();
+    let train_targets = Tensor::cat(vec![t1, t2, t3], 0).detach();
 
     let num_total_pixels = train_rays_o.dims()[0];
     println!("Total training pixels: {}", num_total_pixels);
+
+    // --- 2.5 サンプリング効率化のためのインデックス事前計算 (CPU側) ---
+    let targets_data: Vec<f32> = train_targets
+        .clone()
+        .into_data()
+        .convert::<f32>()
+        .to_vec()
+        .unwrap();
+    let mut fg_indices = Vec::new();
+    let mut bg_indices = Vec::new();
+
+    for i in 0..num_total_pixels {
+        let idx = i * 3;
+        let sum_color = targets_data[idx] + targets_data[idx + 1] + targets_data[idx + 2];
+
+        // 色の合計が一定以上なら物体（前景）、そうでなければ背景
+        if sum_color > 0.05 {
+            fg_indices.push(i as i32);
+        } else {
+            bg_indices.push(i as i32);
+        }
+    }
+    println!(
+        "Foreground pixels: {}, Background pixels: {}",
+        fg_indices.len(),
+        bg_indices.len()
+    );
 
     // --- 3. モデル初期化 (100個) ---
     // 初期配置を少し広げる (0.5 -> 0.8)
@@ -89,13 +118,30 @@ fn main() {
 
     for i in 1..=ITERATIONS {
         // --- 4. バッチサンプリング ---
-        // ランダムなインデックスを生成
-        let indices = Tensor::<MyBackend, 1>::random(
-            [BATCH_SIZE],
-            Distribution::Uniform(0.0, num_total_pixels as f64),
-            &device,
-        )
-        .int(); // float -> int
+        let mut rng = rand::rng();
+
+        // バッチを「全体ランダム」と「前景ブースト」で半分ずつに分ける
+        let uniform_batch_size = BATCH_SIZE / 2;
+        let fg_boost_batch_size = BATCH_SIZE - uniform_batch_size;
+
+        let mut batch_indices = Vec::with_capacity(BATCH_SIZE);
+
+        // 1. 全体からのランダム抽出 (背景と前景が「実際の画像の比率」で自然に選ばれる)
+        for _ in 0..uniform_batch_size {
+            // 0 から num_total_pixels - 1 までの一様乱数
+            batch_indices.push(rng.random_range(0..num_total_pixels as i32));
+        }
+
+        // 2. 前景からの抽出 (物体の形を早く作るためのブースト)
+        if !fg_indices.is_empty() {
+            for _ in 0..fg_boost_batch_size {
+                let idx = rng.random_range(0..fg_indices.len());
+                batch_indices.push(fg_indices[idx]);
+            }
+        }
+
+        // Int型のTensorとして生成
+        let indices = Tensor::<MyBackend, 1, Int>::from_ints(batch_indices.as_slice(), &device);
 
         // インデックスを使ってデータを抽出 (Gather)
         let batch_ro = train_rays_o.clone().select(0, indices.clone()).detach();
@@ -127,12 +173,17 @@ fn main() {
         let centers = model.centers.val();
         let radii = activation::softplus(model.radius.val(), 1.0);
 
-        // [a] 半径ペナルティ: 球が大きくなりすぎるのを防ぐ
-        let r_mask = radii.clone().greater_elem(1.0); // 半径が1.0を超えたら罰則
-        let radius_penalty = Tensor::zeros_like(&radii)
+        // [a] 半径ペナルティ: 球が大きくなりすぎるのを防ぎつつ、不要な球を小さくする
+        // 元の「1.0を超えたら罰則」に加えて、常に少しだけ半径を小さくしようとする L1 正則化を足す
+        let radius_l1_penalty = radii.clone().abs().mean();
+
+        let r_mask = radii.clone().greater_elem(1.0);
+        let radius_large_penalty = Tensor::zeros_like(&radii)
             .mask_where(r_mask, radii.clone().powf_scalar(2.0))
             .mean();
-        loss = loss + radius_penalty * 0.1;
+
+        // ゴミを消すために L1 ペナルティをわずかに効かせる (0.01 くらいから調整)
+        loss = loss + radius_large_penalty * 0.1 + radius_l1_penalty * 0.001;
 
         // [b] 原点引力: 球がバラバラに散らばるのを防ぐ
         let center_penalty = centers.clone().powf_scalar(2.0).mean();

@@ -446,10 +446,10 @@ impl State {
             self.camera.pos += right * move_speed;
         }
         if self.input.up {
-            self.camera.pos -= up * move_speed;
+            self.camera.pos += up * move_speed;
         }
         if self.input.down {
-            self.camera.pos += up * move_speed;
+            self.camera.pos -= up * move_speed;
         }
 
         if self.input.turn_left {
@@ -459,10 +459,10 @@ impl State {
             self.camera.yaw += turn_speed;
         }
         if self.input.turn_up {
-            self.camera.pitch -= turn_speed;
+            self.camera.pitch += turn_speed;
         }
         if self.input.turn_down {
-            self.camera.pitch += turn_speed;
+            self.camera.pitch -= turn_speed;
         }
 
         // 真上・真下を見すぎないようにクランプ (-89度 ～ 89度)

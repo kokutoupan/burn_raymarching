@@ -87,7 +87,8 @@ pub fn render_diff<B: Backend>(
     // 混合色
     let mixed_color = color_sum / weight_sum;
 
-    let object_color = mixed_color * lighting;
+    // let object_color = mixed_color * lighting;
+    let object_color = mixed_color;
 
     let dist_scene = scene_sdf_value(p_final, centers, radius);
 

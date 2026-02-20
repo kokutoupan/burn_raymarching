@@ -34,7 +34,7 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
     );
     let p = pos[in_vertex_index];
     out.clip_position = vec4<f32>(p, 0.0, 1.0);
-    out.uv = vec2<f32>(p.x, -p.y);
+    out.uv = vec2<f32>(p.x, p.y);
     return out;
 }
 
