@@ -32,11 +32,13 @@ pub fn soft_min_tensor<B: Backend>(dists: Tensor<B, 2>, k: f32) -> Tensor<B, 2> 
     // Formula: -log( sum( exp(-k * d) ) ) / k
 
     // 数値安定性のため、最大値を引いてからexp計算する (LogSumExp trick)
-    // max_val: [N, 1]
-    let max_val = dists.clone().detach().mul_scalar(-k).max_dim(1);
+    // -k * d なので、最大値は -k * d の中での最大値
+    let val = dists.mul_scalar(-k);
+    let max_val = val.clone().detach().max_dim(1);
 
-    let exp = (dists.mul_scalar(-k) - max_val.clone()).exp();
+    let exp = (val - max_val.clone()).exp();
     let sum_exp = exp.sum_dim(1); // [N, 1]
 
-    (sum_exp.log() + max_val).div_scalar(-k)
+    // sum_exp が 0 になると log(0) = -inf となり NaN を引き起こすため、小さな値を足して防ぐ
+    (sum_exp.clamp_min(1e-8).log() + max_val).div_scalar(-k)
 }

@@ -19,7 +19,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 20;
+    const N: usize = 10;
     const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
@@ -100,11 +100,41 @@ fn main() {
         bg_indices.len()
     );
 
-    // --- 3. モデル初期化 (100個) ---
-    // 初期配置を少し広げる (0.5 -> 0.8)
+    // --- 3. モデル初期化 ---
+    let n_f32 = N as f32;
+    let grid_size = n_f32.cbrt().ceil() as usize; // N=20なら grid_size=3 (最大27個入る箱)
+    let step_size = 1.0 / (grid_size as f32 - 1.0).max(1.0);
+
+    let mut grid_centers: Vec<f32> = Vec::with_capacity(N * 3);
+    let mut rng = rand::rng();
+
+    'outer: for x in 0..grid_size {
+        for y in 0..grid_size {
+            for z in 0..grid_size {
+                if grid_centers.len() >= N * 3 {
+                    break 'outer; // N個に達したら終了
+                }
+                // -0.3 ~ 0.3 の範囲で配置
+                let px = (x as f32 * step_size) - 0.3;
+                let py = (y as f32 * step_size) - 0.3;
+                let pz = (z as f32 * step_size) - 0.3;
+
+                // 配置間隔を少し広げる (スケール調整) + 微小なジッター(ノイズ)を加えて
+                let mut jitter = || rng.random_range(-0.01..0.01);
+                grid_centers.push(px * 1.3 + jitter());
+                grid_centers.push(py * 1.3 + jitter());
+                grid_centers.push(pz * 1.3 + jitter());
+            }
+        }
+    }
+
+    // もし N 個に満たない場合は、残りをランダムで埋める
+    while grid_centers.len() < N * 3 {
+        grid_centers.push(rng.random_range(-0.8..0.8));
+    }
+
     let init_centers =
-        Tensor::<MyBackend, 1>::random([N, 3], Distribution::Uniform(-0.8, 0.8), &device)
-            .reshape([N, 3]);
+        Tensor::<MyBackend, 1>::from_floats(grid_centers.as_slice(), &device).reshape([N, 3]);
     let init_logits = Tensor::<MyBackend, 1>::zeros([N * 3], &device).reshape([N, 3]);
     let init_radii = Tensor::<MyBackend, 1>::from_floats([0.0; N], &device).reshape([N, 1]); // 小さめでスタート(Softplus(-2) ≈ 0.12)
 
@@ -148,8 +178,12 @@ fn main() {
         let batch_rd = train_rays_d.clone().select(0, indices.clone()).detach();
         let batch_target = train_targets.clone().select(0, indices).detach();
 
+        // --- アニーリングの計算 ---
+        let progress = i as f32 / ITERATIONS as f32;
+        let smooth_k = 5.0 + (32.0 - 5.0) * progress;
+
         // --- Forward & Backward ---
-        let output = model.forward(batch_ro, batch_rd);
+        let output = model.forward(batch_ro, batch_rd, smooth_k);
 
         // ==========================================
         // --- Loss計算 ---
@@ -174,7 +208,6 @@ fn main() {
         let radii = activation::softplus(model.radius.val(), 1.0);
 
         // [a] 半径ペナルティ: 球が大きくなりすぎるのを防ぎつつ、不要な球を小さくする
-        // 元の「1.0を超えたら罰則」に加えて、常に少しだけ半径を小さくしようとする L1 正則化を足す
         let radius_l1_penalty = radii.clone().abs().mean();
 
         let r_mask = radii.clone().greater_elem(1.0);
@@ -182,12 +215,11 @@ fn main() {
             .mask_where(r_mask, radii.clone().powf_scalar(2.0))
             .mean();
 
-        // ゴミを消すために L1 ペナルティをわずかに効かせる (0.01 くらいから調整)
-        loss = loss + radius_large_penalty * 0.1 + radius_l1_penalty * 0.001;
+        loss = loss + radius_large_penalty * 0.1 + radius_l1_penalty * 0.004;
 
         // [b] 原点引力: 球がバラバラに散らばるのを防ぐ
         let center_penalty = centers.clone().powf_scalar(2.0).mean();
-        loss = loss + center_penalty * 0.1; // Billboard対策で少し強めに設定(0.001 -> 0.05)
+        loss = loss + center_penalty * 0.1; // Billboard対策で少し強めに設定
 
         // [c] カメラ近接バリア (Billboard Effect対策の要)
         let centers_val = model.centers.val();
@@ -200,8 +232,6 @@ fn main() {
 
         // 境界線 1.5 を超えているかどうかのマスク
         let out_of_bounds_mask = max_reach.clone().greater_elem(1.2);
-
-        // はみ出した距離の2乗をペナルティにする (なめらかに勾配が効くように)
         let excess_dist = max_reach.clone() - 1.1;
         let penalty_values = excess_dist.powf_scalar(2.0);
 
@@ -211,7 +241,7 @@ fn main() {
 
         loss = loss + camera_proximity_penalty * 5.0;
 
-        // [d] 反発項: 球同士の重なりを防ぐ (展開公式による高速化版)
+        // [d] 反発項: 球同士の重なりを防ぐ
         let centers_val = model.centers.val();
         let c_sq_val = centers_val.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
         let c_sq_t = c_sq_val.clone().transpose(); // [1, N]
@@ -221,7 +251,7 @@ fn main() {
         let dist_matrix = dist_sq.clamp_min(1e-6).sqrt(); // [N, N]
         let eye = Tensor::<MyBackend, 2>::eye(N, &device);
         let repulsion_loss = (dist_matrix + eye * 100.0 + 1e-6).powf_scalar(-1.0).mean();
-        loss = loss + repulsion_loss * 0.00001; // 極力弱める(0.0002 -> 0.00001)
+        loss = loss + repulsion_loss * 0.00001;
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
@@ -264,10 +294,9 @@ fn main() {
 
     // 1. パラメータを確定値(物理量)に変換して取り出す
     let centers_tensor = model.centers.val();
-    let colors_tensor = activation::sigmoid(model.colors.val()); // 色は0~1に
-    let radii_tensor = activation::softplus(model.radius.val(), 1.0); // 半径は正の値に
+    let colors_tensor = activation::sigmoid(model.colors.val());
+    let radii_tensor = activation::softplus(model.radius.val(), 1.0);
 
-    // CPUに転送
     let centers_vec: Vec<f32> = centers_tensor
         .into_data()
         .convert::<f32>()
@@ -276,7 +305,6 @@ fn main() {
     let colors_vec: Vec<f32> = colors_tensor.into_data().convert::<f32>().to_vec().unwrap();
     let radii_vec: Vec<f32> = radii_tensor.into_data().convert::<f32>().to_vec().unwrap();
 
-    // 2. 保存用の構造体を作る
     #[derive(serde::Serialize)]
     struct SceneData {
         num_spheres: usize,
@@ -297,10 +325,6 @@ fn main() {
     serde_json::to_writer_pretty(file, &data).expect("Failed to write json");
 
     println!("Export done. Run `cargo run --release --bin viewer`");
-    // println!("Rendering final images...");
-    // save_tiled_preview(&model, ro1, rd1, width, height, "steps/final_1.png");
-    // save_tiled_preview(&model, ro2, rd2, width, height, "steps/final_2.png");
-    // save_tiled_preview(&model, ro3, rd3, width, height, "steps/final_3.png");
 }
 
 // --- ヘルパー: タイル分割レンダリング (VRAM節約) ---
@@ -321,15 +345,12 @@ fn save_tiled_preview<B: Backend>(
     let mut start = 0;
     while start < num_pixels {
         let end = (start + chunk_size).min(num_pixels);
-
-        // スライス
         let batch_ro = rays_o.clone().slice([start..end]);
         let batch_rd = rays_d.clone().slice([start..end]);
 
         // 推論 (勾配不要なので detach してもいいが、Model::forward が tensor を返すので
         // 返り値を detach するのが簡単)
-        let out = model.forward(batch_ro, batch_rd).detach();
-
+        let out = model.forward(batch_ro, batch_rd, 32.0).detach();
         outputs.push(out);
         start += chunk_size;
     }
@@ -338,4 +359,4 @@ fn save_tiled_preview<B: Backend>(
     let full_img_flat = Tensor::cat(outputs, 0);
 
     save_tensor_as_image(full_img_flat, width as u32, height as u32, path);
-} // マスク計算 (距離が近いほど1.0)
+}

@@ -16,13 +16,13 @@ pub fn render<B: Backend>(
 
     for _ in 0..40 {
         let p = ray_org.clone() + ray_dir.clone() * t.clone();
-        let dist = scene_sdf_value(p, centers.clone(), radius.clone());
+        let dist = scene_sdf_value(p, centers.clone(), radius.clone(), 32.0);
         t = t + dist;
     }
 
     let p_final = ray_org + ray_dir * t;
 
-    let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone());
+    let normal = calc_normal_scene(p_final.clone(), centers.clone(), radius.clone(), 32.0);
 
     let light_dir_vec: [f32; 3] = [-0.5, 0.5, -1.0];
     // 正規化
@@ -72,7 +72,7 @@ pub fn render<B: Backend>(
 
     let object_color = mixed_color * lighting;
 
-    let dist_scene = scene_sdf_value(p_final, centers, radius);
+    let dist_scene = scene_sdf_value(p_final, centers, radius, 32.0);
 
     let mask = dist_scene.powf_scalar(2.0).mul_scalar(-10.0).exp();
 

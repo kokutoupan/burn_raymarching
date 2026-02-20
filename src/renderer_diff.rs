@@ -8,6 +8,7 @@ pub fn render_diff<B: Backend>(
     centers: Tensor<B, 2>, // [M, 3]
     colors: Tensor<B, 2>,  // [M, 3]
     radius: Tensor<B, 2>,  // [M, 1]
+    smooth_k: f32,
 ) -> Tensor<B, 2> // [N, 3]
 {
     let num_rays = ray_org.dims()[0];
@@ -17,7 +18,7 @@ pub fn render_diff<B: Backend>(
 
     for _ in 0..40 {
         let p = ray_org.clone() + ray_dir.clone() * t.clone();
-        let dist = scene_sdf_value(p, centers.clone(), radius.clone());
+        let dist = scene_sdf_value(p, centers.clone(), radius.clone(), smooth_k);
         t = (t + dist).detach();
     }
 
@@ -26,7 +27,7 @@ pub fn render_diff<B: Backend>(
     let p_approx = ray_org.clone() + ray_dir.clone() * t.clone();
 
     // ★ここがミソ: この SDF 評価には centers と radius の勾配が乗る
-    let dist_last = scene_sdf_value(p_approx, centers.clone(), radius.clone());
+    let dist_last = scene_sdf_value(p_approx, centers.clone(), radius.clone(), smooth_k);
 
     // detach された t に、勾配付きの dist_last を足すことで勾配を「再接続」する
     let t_final = t + dist_last;
@@ -38,6 +39,7 @@ pub fn render_diff<B: Backend>(
         p_final.clone().detach(),
         centers.clone().detach(),
         radius.clone().detach(),
+        smooth_k,
     );
 
     let light_dir_vec: [f32; 3] = [-0.5, 0.5, -1.0];
@@ -90,7 +92,7 @@ pub fn render_diff<B: Backend>(
     // let object_color = mixed_color * lighting;
     let object_color = mixed_color;
 
-    let dist_scene = scene_sdf_value(p_final, centers, radius);
+    let dist_scene = scene_sdf_value(p_final, centers, radius, smooth_k);
 
     let mask = activation::sigmoid(dist_scene.mul_scalar(-15.0));
 

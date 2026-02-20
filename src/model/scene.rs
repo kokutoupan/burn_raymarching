@@ -22,12 +22,24 @@ impl<B: Backend> SceneModel<B> {
         }
     }
 
-    pub fn forward(&self, ray_org: Tensor<B, 2>, ray_dir: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(
+        &self,
+        ray_org: Tensor<B, 2>,
+        ray_dir: Tensor<B, 2>,
+        smooth_k: f32,
+    ) -> Tensor<B, 2> {
         let colors_rgb = activation::sigmoid(self.colors.val());
         let centers = self.centers.val();
         let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
 
-        render_diff(ray_org, ray_dir, centers, colors_rgb, radius_positive)
+        render_diff(
+            ray_org,
+            ray_dir,
+            centers,
+            colors_rgb,
+            radius_positive,
+            smooth_k,
+        )
     }
 }
 
@@ -35,6 +47,7 @@ pub fn scene_sdf_value<B: Backend>(
     p: Tensor<B, 2>,       // [N, 3]
     centers: Tensor<B, 2>, // [M, 3]
     radius: Tensor<B, 2>,  // [M, 1]
+    smooth_k: f32,
 ) -> Tensor<B, 2> {
     // 展開公式 (||p - c||^2 = ||p||^2 + ||c||^2 - 2p*c) を使って距離を計算
     let p_sq = p.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
@@ -48,13 +61,14 @@ pub fn scene_sdf_value<B: Backend>(
     let radius_row = radius.transpose(); // [1, M]
     let all_dists = dists - radius_row; // [N, M] - [1, M] -> [N, M]
 
-    soft_min_tensor(all_dists, 32.0)
+    soft_min_tensor(all_dists, smooth_k)
 }
 
 pub fn calc_normal_scene<B: Backend>(
     p: Tensor<B, 2>,       // [N, 3]
     centers: Tensor<B, 2>, // [M, 3]
     radius: Tensor<B, 2>,  // [M, 1]
+    smooth_k: f32,
 ) -> Tensor<B, 2> {
     // [N, 3] (Normal)
 
@@ -80,7 +94,7 @@ pub fn calc_normal_scene<B: Backend>(
 
     // 4. 一括でSDF計算
     // 結果は [N*6, 1]
-    let dists_flat = scene_sdf_value(p_flat, centers, radius);
+    let dists_flat = scene_sdf_value(p_flat, centers, radius, smooth_k);
 
     // 5. 結果を [N, 6] に戻す
     // 列0: +x, 列1: -x, 列2: +y... と並んでいます
