@@ -104,7 +104,7 @@ fn main() {
     let mut colors_vec = vec![0.0; current_n * 3]; // Logit 0.0 (グレー)
     let mut radii_vec = vec![0.0; current_n]; // Softplus(-2.0) ≒ 0.12
     let mut light_dir_vec: Vec<f32> = vec![0.0, 1.0, 0.0];
-    let mut ambient_intensity_vec: Vec<f32> = vec![1.0];
+    let mut ambient_intensity_vec: Vec<f32> = vec![-1.4]; // sigmoid(-1.4) ≒ 0.2
 
     // 初期位置を少しだけ散らす
     for i in 0..current_n {
