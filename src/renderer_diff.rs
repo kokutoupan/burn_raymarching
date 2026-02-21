@@ -4,11 +4,13 @@ use burn::tensor::activation;
 use burn::tensor::activation::softmax;
 
 pub fn render_diff<B: Backend>(
-    ray_org: Tensor<B, 2>, // [N, 3]
-    ray_dir: Tensor<B, 2>, // [N, 3]
-    centers: Tensor<B, 2>, // [M, 3]
-    colors: Tensor<B, 2>,  // [M, 3]
-    radius: Tensor<B, 2>,  // [M, 1]
+    ray_org: Tensor<B, 2>,           // [N, 3]
+    ray_dir: Tensor<B, 2>,           // [N, 3]
+    centers: Tensor<B, 2>,           // [M, 3]
+    colors: Tensor<B, 2>,            // [M, 3]
+    radius: Tensor<B, 2>,            // [M, 1]
+    light_dir: Tensor<B, 1>,         // [3]
+    ambient_intensity: Tensor<B, 1>, // [1]
     smooth_k: f32,
 ) -> Tensor<B, 2> // [N, 3]
 {
@@ -43,20 +45,22 @@ pub fn render_diff<B: Backend>(
         smooth_k,
     );
 
-    let light_dir_vec: [f32; 3] = [-0.5, 0.5, -1.0];
-    // 正規化
-    let ld_len =
-        (light_dir_vec[0].powf(2.0) + light_dir_vec[1].powf(2.0) + light_dir_vec[2].powf(2.0))
-            .sqrt();
-    let light_dir_data = light_dir_vec.map(|x| x / ld_len);
+    let ld = light_dir;
+    let ld_sq = ld.clone().powf_scalar(2.0).sum();
+    let ld_norm = ld / ld_sq.sqrt();
 
-    // [1, 3] として作成 (ブロードキャスト用)
-    let light_dir = Tensor::<B, 1>::from_floats(light_dir_data, &device).unsqueeze_dim(0);
+    // 2. 法線との内積 (光の当たり具合: 0.0 ~ 1.0)
+    let dot = normal
+        .clone()
+        .matmul(ld_norm.unsqueeze_dim::<2>(1))
+        .squeeze_dim::<1>(1);
+    let diffuse = dot.clamp_min(0.0);
 
-    // normal: [N, 3], light_dir: [1, 3] -> [N, 3]
-    let diffuse = (normal * light_dir).sum_dim(1).clamp_min(0.0); // [N, 1]
+    // 3. 環境光と平行光源をブレンド
+    let ambient = activation::sigmoid(ambient_intensity); // 0.0 ~ 1.0に制限
+    let directional = diffuse.clone() * (1.0 - ambient.clone());
 
-    let lighting = diffuse + 0.1;
+    let lighting: Tensor<B, 1> = ambient + directional;
 
     // Step A: 全レイと全球の距離行列 [N, M] を計算
     let p_sq = p_final.clone().powf_scalar(2.0).sum_dim(1); // [N, 1]
@@ -78,7 +82,7 @@ pub fn render_diff<B: Backend>(
     let weighted_colors = colors_expanded * weights_expanded;
     let mixed_color = weighted_colors.sum_dim(1).squeeze_dim(1);
 
-    let object_color = mixed_color;
+    let object_color = mixed_color * lighting.unsqueeze_dim(1);
 
     let dist_scene = scene_sdf_value(p_final, centers, radius, smooth_k);
 

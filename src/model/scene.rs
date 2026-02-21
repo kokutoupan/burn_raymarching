@@ -11,14 +11,24 @@ pub struct SceneModel<B: Backend> {
     pub centers: Param<Tensor<B, 2>>, // [N, 3]
     pub colors: Param<Tensor<B, 2>>,  // [N, 3]
     pub radius: Param<Tensor<B, 2>>,  // [N, 1] 半径 (スカラだが扱いやすくするため2次元配列)
+    pub light_dir: Param<Tensor<B, 1>>,
+    pub ambient_intensity: Param<Tensor<B, 1>>,
 }
 
 impl<B: Backend> SceneModel<B> {
-    pub fn new(centers: Tensor<B, 2>, colors: Tensor<B, 2>, radius: Tensor<B, 2>) -> Self {
+    pub fn new(
+        centers: Tensor<B, 2>,
+        colors: Tensor<B, 2>,
+        radius: Tensor<B, 2>,
+        light_dir: Tensor<B, 1>,
+        ambient_intensity: Tensor<B, 1>,
+    ) -> Self {
         Self {
             centers: Param::from_tensor(centers),
             colors: Param::from_tensor(colors),
             radius: Param::from_tensor(radius),
+            light_dir: Param::from_tensor(light_dir),
+            ambient_intensity: Param::from_tensor(ambient_intensity),
         }
     }
 
@@ -31,6 +41,8 @@ impl<B: Backend> SceneModel<B> {
         let colors_rgb = activation::sigmoid(self.colors.val());
         let centers = self.centers.val();
         let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
+        let light_dir = self.light_dir.val();
+        let ambient_intensity = self.ambient_intensity.val();
 
         render_diff(
             ray_org,
@@ -38,6 +50,8 @@ impl<B: Backend> SceneModel<B> {
             centers,
             colors_rgb,
             radius_positive,
+            light_dir,
+            ambient_intensity,
             smooth_k,
         )
     }

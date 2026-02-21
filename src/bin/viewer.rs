@@ -18,6 +18,8 @@ struct SceneData {
     centers: Vec<f32>,
     colors: Vec<f32>,
     radii: Vec<f32>,
+    light_dir: Vec<f32>,
+    ambient_intensity: Vec<f32>,
 }
 
 #[repr(C)]

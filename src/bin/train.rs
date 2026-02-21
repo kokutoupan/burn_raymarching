@@ -103,6 +103,8 @@ fn main() {
     let mut centers_vec = vec![0.0; current_n * 3];
     let mut colors_vec = vec![0.0; current_n * 3]; // Logit 0.0 (グレー)
     let mut radii_vec = vec![0.0; current_n]; // Softplus(-2.0) ≒ 0.12
+    let mut light_dir_vec: Vec<f32> = vec![-0.5, 0.5, -1.0];
+    let mut ambient_intensity_vec: Vec<f32> = vec![0.3];
 
     // 初期位置を少しだけ散らす
     for i in 0..current_n {
@@ -128,8 +130,17 @@ fn main() {
             .reshape([current_n, 3]);
         let init_radii = Tensor::<MyBackend, 1>::from_floats(radii_vec.as_slice(), &device)
             .reshape([current_n, 1]);
+        let init_light_dir = Tensor::<MyBackend, 1>::from_floats(light_dir_vec.as_slice(), &device);
+        let init_ambient_intensity =
+            Tensor::<MyBackend, 1>::from_floats(ambient_intensity_vec.as_slice(), &device);
 
-        let mut model = SceneModel::new(init_centers, init_colors, init_radii);
+        let mut model = SceneModel::new(
+            init_centers,
+            init_colors,
+            init_radii,
+            init_light_dir,
+            init_ambient_intensity,
+        );
 
         // ★重要: ステージごとにAdamを作り直す（古いテンソルサイズのモメンタムをリセットして爆発を防ぐ）
         let mut optim = AdamConfig::new()
@@ -197,6 +208,20 @@ fn main() {
             let final_colors: Vec<f32> =
                 colors_tensor.into_data().convert::<f32>().to_vec().unwrap();
             let final_radii: Vec<f32> = radii_tensor.into_data().convert::<f32>().to_vec().unwrap();
+            let final_light_dir: Vec<f32> = model
+                .light_dir
+                .val()
+                .into_data()
+                .convert::<f32>()
+                .to_vec()
+                .unwrap();
+            let final_ambient_intensity: Vec<f32> = model
+                .ambient_intensity
+                .val()
+                .into_data()
+                .convert::<f32>()
+                .to_vec()
+                .unwrap();
 
             // 2. JSONへの保存
             #[derive(serde::Serialize)]
@@ -205,6 +230,8 @@ fn main() {
                 centers: Vec<f32>,
                 colors: Vec<f32>,
                 radii: Vec<f32>,
+                light_dir: Vec<f32>,
+                ambient_intensity: Vec<f32>,
             }
 
             let data = SceneData {
@@ -212,6 +239,8 @@ fn main() {
                 centers: final_centers,
                 colors: final_colors,
                 radii: final_radii,
+                light_dir: final_light_dir,
+                ambient_intensity: final_ambient_intensity,
             };
 
             let file = std::fs::File::create("scene.json").expect("Failed to create file");
@@ -268,6 +297,20 @@ fn main() {
         centers_vec = next_centers;
         colors_vec = next_colors;
         radii_vec = next_radii;
+        light_dir_vec = model
+            .light_dir
+            .val()
+            .into_data()
+            .convert::<f32>()
+            .to_vec()
+            .unwrap();
+        ambient_intensity_vec = model
+            .ambient_intensity
+            .val()
+            .into_data()
+            .convert::<f32>()
+            .to_vec()
+            .unwrap();
         println!("  => Pruning & Splitting complete. Next N = {}", current_n);
     }
 }
