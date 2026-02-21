@@ -1,6 +1,7 @@
 use crate::model::scene::{calc_normal_scene, scene_sdf_value};
 use burn::prelude::*;
 use burn::tensor::activation;
+use burn::tensor::activation::softmax;
 
 pub fn render_diff<B: Backend>(
     ray_org: Tensor<B, 2>, // [N, 3]
@@ -67,29 +68,16 @@ pub fn render_diff<B: Backend>(
     let dists = dists_sq.clamp_min(1e-6).sqrt() - radius.clone().transpose(); // [N, M]
 
     // Step B: 重みの計算 [N, M]
-    // weight = exp(-dist * 10.0)
-    let weights = dists.mul_scalar(-10.0).exp();
+    let weights = softmax(dists.mul_scalar(-10.0), 1); // [N, M]
 
     // Step C: 色の加重平均
-    // colors: [M, 3] -> [1, M, 3]
     let colors_expanded = colors.unsqueeze_dim::<3>(0);
+    let weights_expanded = weights.unsqueeze_dim::<3>(2);
 
-    // weights: [N, M] -> [N, M, 1] (色成分へ掛けるため)
-    let weights_expanded = weights.clone().unsqueeze_dim::<3>(2);
-
-    // weighted_colors: [N, M, 3] = [1, M, 3] * [N, M, 1]
+    // ★ Softmaxは既に合計が1.0なので、割り算(weight_sum)は不要！掛けて足すだけ
     let weighted_colors = colors_expanded * weights_expanded;
+    let mixed_color = weighted_colors.sum_dim(1).squeeze_dim(1);
 
-    // 全球分を合計 [N, M, 3] -> [N, 1, 3] -> [N, 3]
-    let color_sum = weighted_colors.sum_dim(1).squeeze_dim(1);
-
-    // 重みの合計 [N, M] -> [N, 1]
-    let weight_sum = weights.sum_dim(1) + 1e-5;
-
-    // 混合色
-    let mixed_color = color_sum / weight_sum;
-
-    // let object_color = mixed_color * lighting;
     let object_color = mixed_color;
 
     let dist_scene = scene_sdf_value(p_final, centers, radius, smooth_k);
