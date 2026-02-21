@@ -43,6 +43,8 @@ struct Uniforms {
     padding2: f32,
     cam_up: [f32; 3],
     padding3: f32,
+    light_dir: [f32; 3],
+    ambient_intensity: f32,
 }
 
 // --- 入力とカメラ ---
@@ -308,6 +310,8 @@ impl State {
             padding2: 0.0,
             cam_up: camera.up().into(),
             padding3: 0.0,
+            light_dir: [scene.light_dir[0], scene.light_dir[1], scene.light_dir[2]],
+            ambient_intensity: scene.ambient_intensity[0],
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -4,13 +4,13 @@ use burn::tensor::activation;
 use burn::tensor::activation::softmax;
 
 pub fn render_diff<B: Backend>(
-    ray_org: Tensor<B, 2>,           // [N, 3]
-    ray_dir: Tensor<B, 2>,           // [N, 3]
-    centers: Tensor<B, 2>,           // [M, 3]
-    colors: Tensor<B, 2>,            // [M, 3]
-    radius: Tensor<B, 2>,            // [M, 1]
-    light_dir: Tensor<B, 1>,         // [3]
-    ambient_intensity: Tensor<B, 1>, // [1]
+    ray_org: Tensor<B, 2>,   // [N, 3]
+    ray_dir: Tensor<B, 2>,   // [N, 3]
+    centers: Tensor<B, 2>,   // [M, 3]
+    colors: Tensor<B, 2>,    // [M, 3]
+    radius: Tensor<B, 2>,    // [M, 1]
+    light_dir: Tensor<B, 1>, // [3]
+    ambient: Tensor<B, 1>,   // [1]
     smooth_k: f32,
 ) -> Tensor<B, 2> // [N, 3]
 {
@@ -57,7 +57,6 @@ pub fn render_diff<B: Backend>(
     let diffuse = dot.clamp_min(0.0);
 
     // 3. 環境光と平行光源をブレンド
-    let ambient = activation::sigmoid(ambient_intensity); // 0.0 ~ 1.0に制限
     let directional = diffuse.clone() * (1.0 - ambient.clone());
 
     let lighting: Tensor<B, 1> = ambient + directional;

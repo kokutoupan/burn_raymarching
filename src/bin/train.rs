@@ -103,8 +103,8 @@ fn main() {
     let mut centers_vec = vec![0.0; current_n * 3];
     let mut colors_vec = vec![0.0; current_n * 3]; // Logit 0.0 (グレー)
     let mut radii_vec = vec![0.0; current_n]; // Softplus(-2.0) ≒ 0.12
-    let mut light_dir_vec: Vec<f32> = vec![-0.5, 0.5, -1.0];
-    let mut ambient_intensity_vec: Vec<f32> = vec![0.3];
+    let mut light_dir_vec: Vec<f32> = vec![0.0, 1.0, 0.0];
+    let mut ambient_intensity_vec: Vec<f32> = vec![1.0];
 
     // 初期位置を少しだけ散らす
     for i in 0..current_n {
@@ -215,9 +215,8 @@ fn main() {
                 .convert::<f32>()
                 .to_vec()
                 .unwrap();
-            let final_ambient_intensity: Vec<f32> = model
-                .ambient_intensity
-                .val()
+            let ambient_tensor = activation::sigmoid(model.ambient_intensity.val());
+            let final_ambient_intensity: Vec<f32> = ambient_tensor
                 .into_data()
                 .convert::<f32>()
                 .to_vec()

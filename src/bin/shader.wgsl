@@ -8,6 +8,8 @@ struct Uniforms {
     padding2: f32,
     cam_up: vec3<f32>,
     padding3: f32,
+    light_dir: vec3<f32>,
+    ambient_intensity: f32,
 };
 
 struct Sphere {
@@ -110,14 +112,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let p = ro + t * rd;
         let normal = calc_normal(p);
         
-        // renderer.rsのライト設定に完全一致させる [-0.5, 0.5, -1.0]
-        let light = normalize(vec3<f32>(-0.5, 0.5, -1.0));
+        let light = normalize(uniforms.light_dir);
         let diff = max(dot(normal, light), 0.0);
         
         let obj_color = calc_color(p);
         
-        // lighting = diffuse + 0.1
-        col = obj_color * (diff + 0.1);
+        let ambient = uniforms.ambient_intensity;
+        let directional = diff * (1.0 - ambient);
+        let lighting = ambient + directional;
+        
+        col = obj_color * lighting;
     }
 
     return vec4<f32>(col, 1.0);

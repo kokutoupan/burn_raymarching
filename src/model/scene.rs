@@ -42,7 +42,7 @@ impl<B: Backend> SceneModel<B> {
         let centers = self.centers.val();
         let radius_positive = activation::softplus(self.radius.val(), 1.0) + 0.01;
         let light_dir = self.light_dir.val();
-        let ambient_intensity = self.ambient_intensity.val();
+        let ambient = activation::sigmoid(self.ambient_intensity.val());
 
         render_diff(
             ray_org,
@@ -51,7 +51,7 @@ impl<B: Backend> SceneModel<B> {
             colors_rgb,
             radius_positive,
             light_dir,
-            ambient_intensity,
+            ambient,
             smooth_k,
         )
     }
