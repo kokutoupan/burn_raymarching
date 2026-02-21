@@ -1,6 +1,5 @@
 use burn::prelude::*;
 use burn::tensor::activation;
-use rand::RngExt;
 
 use crate::model::scene::SceneModel;
 
@@ -118,7 +117,6 @@ pub fn prune_and_split<B: Backend>(
     let mut next_centers = Vec::new();
     let mut next_colors = Vec::new();
     let mut next_radii = Vec::new();
-    let mut mut_rng = rand::rng();
 
     for i in 0..current_n {
         let r = eval_radii[i];
