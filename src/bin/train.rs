@@ -240,7 +240,7 @@ fn main() {
 
         // --- C. 世代交代フェーズ: Pruning (削除) & Splitting (分裂) ---
         let (next_centers, next_colors, next_radii, next_n) =
-            prune_and_split(&model, stage, STAGES);
+            prune_and_split(&model, centers_vec.as_slice(), stage, STAGES);
 
         // 次世代の情報をセット
         current_n = next_n;

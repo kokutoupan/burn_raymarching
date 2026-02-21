@@ -36,11 +36,11 @@ pub fn compute_loss<B: Backend>(
         .mask_where(r_mask, radii.clone().powf_scalar(2.0))
         .mean();
 
-    loss = loss + radius_large_penalty * 0.1 + radius_l1_penalty * 0.004;
+    loss = loss + radius_large_penalty * 0.04 + radius_l1_penalty * 0.002;
 
     // [b] 原点引力: 球がバラバラに散らばるのを防ぐ
     let center_penalty = centers.clone().powf_scalar(2.0).mean();
-    loss = loss + center_penalty * 0.1; // Billboard対策で少し強めに設定
+    loss = loss + center_penalty * 0.05; // Billboard対策で少し強めに設定
 
     // [c] カメラ近接バリア (Billboard Effect対策の要)
     let centers_val = model.centers.val();
@@ -48,7 +48,7 @@ pub fn compute_loss<B: Backend>(
     let max_reach = dist_from_origin + radii;
 
     let out_of_bounds_mask = max_reach.clone().greater_elem(1.2);
-    let excess_dist = max_reach.clone() - 1.1;
+    let excess_dist = max_reach.clone() - 1.2;
     let penalty_values = excess_dist.powf_scalar(2.0);
 
     let camera_proximity_penalty = Tensor::zeros_like(&max_reach)
@@ -74,6 +74,7 @@ pub fn compute_loss<B: Backend>(
 
 pub fn prune_and_split<B: Backend>(
     model: &SceneModel<B>,
+    init_centers: &[f32],
     stage: usize,
     stages: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize) {
@@ -85,8 +86,24 @@ pub fn prune_and_split<B: Backend>(
         .convert::<f32>()
         .to_vec()
         .unwrap();
-    let out_colors: Vec<f32> = model
+    // 次世代に引き継ぐための「生の値 (Logit)」
+    let raw_colors: Vec<f32> = model
         .colors
+        .val()
+        .into_data()
+        .convert::<f32>()
+        .to_vec()
+        .unwrap();
+
+    // 削除判定をするための「評価後の値 (0.0 ~ 1.0)」
+    let eval_colors: Vec<f32> = activation::sigmoid(model.colors.val())
+        .into_data()
+        .convert::<f32>()
+        .to_vec()
+        .unwrap();
+
+    let raw_radii: Vec<f32> = model
+        .radius
         .val()
         .into_data()
         .convert::<f32>()
@@ -105,32 +122,81 @@ pub fn prune_and_split<B: Backend>(
 
     for i in 0..current_n {
         let r = eval_radii[i];
+        let raw_radius = raw_radii[i];
         let cx = out_centers[i * 3];
         let cy = out_centers[i * 3 + 1];
         let cz = out_centers[i * 3 + 2];
-        let cr = out_colors[i * 3];
-        let cg = out_colors[i * 3 + 1];
-        let cb = out_colors[i * 3 + 2];
 
-        // 1. Pruning (削除): デカすぎる影(0.25超え)や、極小のゴミ(0.01未満)は次世代に引き継がない
-        if r > 0.25 || r < 0.01 {
+        // 初期座標を取得
+        let init_cx = init_centers[i * 3];
+        let init_cy = init_centers[i * 3 + 1];
+        let init_cz = init_centers[i * 3 + 2];
+
+        // 移動距離の2乗を計算
+        let dx = cx - init_cx;
+        let dy = cy - init_cy;
+        let dz = cz - init_cz;
+        let move_dist_sq = dx * dx + dy * dy + dz * dz;
+
+        // 引き継ぎ用の生の色
+        let raw_r = raw_colors[i * 3];
+        let raw_g = raw_colors[i * 3 + 1];
+        let raw_b = raw_colors[i * 3 + 2];
+
+        // 判定用の0.0~1.0の色
+        let eval_r = eval_colors[i * 3];
+        let eval_g = eval_colors[i * 3 + 1];
+        let eval_b = eval_colors[i * 3 + 2];
+
+        // ==========================================
+        // 1. 厳密な Pruning (ゴミの徹底排除)
+        // ==========================================
+        // [a] サイズ異常（デカすぎる影、または小さすぎるゴミ）
+        if r > 0.35 || r < 0.005 {
             continue;
         }
 
-        // 2. Keep (維持)
-        next_centers.extend_from_slice(&[cx, cy, cz]);
-        next_colors.extend_from_slice(&[cr, cg, cb]);
-        next_radii.push(-2.5);
+        // [b] 画面外への飛散（原点から遠すぎる球は削除: 1.2^2 = 1.44）
+        let dist_sq = cx * cx + cy * cy + cz * cz;
+        if dist_sq > 1.44 {
+            continue;
+        }
 
-        // 3. Splitting (分裂)
+        // [c] 真っ黒な球（色がない＝マスクや辻褄合わせに使われている不要な球）
+        if eval_r + eval_g + eval_b < 0.05 {
+            continue;
+        }
+
+        // ==========================================
+        // 2. 条件付き Splitting (必要なものだけ割る)
+        // ==========================================
         if stage < stages - 1 {
-            let offset_x = (mut_rng.random_range(0.0..1.0) - 0.5) * 0.05;
-            let offset_y = (mut_rng.random_range(0.0..1.0) - 0.5) * 0.05;
-            let offset_z = (mut_rng.random_range(0.0..1.0) - 0.5) * 0.05;
+            if r > 0.05 && move_dist_sq < 0.05 * 0.05 {
+                // 【分割】半径が大きい ＝ まだ大まかな領域しかカバーできていない
+                // -> 2つの小さな球に割って、ディテールを表現させる
+                let offset = 0.03; // 少しずらす
+                let new_r = raw_radius - 0.5;
 
-            next_centers.extend_from_slice(&[cx + offset_x, cy + offset_y, cz + offset_z]);
-            next_colors.extend_from_slice(&[cr, cg, cb]);
-            next_radii.push(-2.5);
+                // 1つ目
+                next_centers.extend_from_slice(&[cx + offset, cy, cz + offset]);
+                next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
+                next_radii.push(new_r); // 半径を小さくリセット(softplusで約0.08)
+
+                // 2つ目（逆方向にずらす）
+                next_centers.extend_from_slice(&[cx - offset, cy, cz - offset]);
+                next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
+                next_radii.push(new_r);
+            } else {
+                // 【維持】すでに十分小さい ＝ ディテールとして綺麗にフィットしている
+                // -> 無駄に割らずに、そのまま維持する
+                next_centers.extend_from_slice(&[cx, cy, cz]);
+                next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
+                next_radii.push(raw_radius);
+            }
+        } else {
+            next_centers.extend_from_slice(&[cx, cy, cz]);
+            next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
+            next_radii.push(raw_radius);
         }
     }
 
