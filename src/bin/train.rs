@@ -10,6 +10,15 @@ use burn_raymarching::dataset::SceneDataset;
 use burn_raymarching::model::scene::SceneModel;
 use burn_raymarching::training::{compute_loss, prune_and_split};
 use burn_raymarching::util::{load_image_as_tensor, save_tensor_as_image};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CameraConfig {
+    file: String,
+    origin: [f32; 3],
+    target: [f32; 3],
+    fov: f32,
+}
 
 fn main() {
     type MyBackend = Autodiff<Wgpu>;
@@ -50,22 +59,34 @@ fn main() {
         &device,
     );
 
-    // 正解画像のロード (3次元 [H, W, 3] で来るので フラット [H*W, 3] にする)
-    let t1 = load_image_as_tensor::<MyBackend>("data/target_1.png", &device)
-        .reshape([-1, 3])
-        .detach();
-    let t2 = load_image_as_tensor::<MyBackend>("data/target_2.png", &device)
-        .reshape([-1, 3])
-        .detach();
-    let t3 = load_image_as_tensor::<MyBackend>("data/target_3.png", &device)
-        .reshape([-1, 3])
-        .detach();
+    // --- JSONからカメラと画像を動的にロード ---
+    println!("Loading camera configurations...");
+    let config_str =
+        std::fs::read_to_string("data/cameras.json").expect("Failed to read cameras.json");
+    let cameras: Vec<CameraConfig> =
+        serde_json::from_str(&config_str).expect("Failed to parse JSON");
 
-    // --- 2. データセットの統合 ---
-    // 全ての視点のデータを結合して、巨大な「学習用プール」を作る
-    let train_rays_o = Tensor::cat(vec![ro1.clone(), ro2.clone(), ro3.clone()], 0).detach(); // [TotalPixels, 3]
-    let train_rays_d = Tensor::cat(vec![rd1.clone(), rd2.clone(), rd3.clone()], 0).detach();
-    let train_targets = Tensor::cat(vec![t1, t2, t3], 0).detach();
+    let mut all_rays_o = Vec::new();
+    let mut all_rays_d = Vec::new();
+    let mut all_targets = Vec::new();
+
+    for cam in &cameras {
+        let (ro, rd) = create_camera_rays::<MyBackend>(
+            width, height, cam.origin, cam.target, cam.fov, &device,
+        );
+        let target_img = load_image_as_tensor::<MyBackend>(&cam.file, &device)
+            .reshape([-1, 3])
+            .detach();
+
+        all_rays_o.push(ro);
+        all_rays_d.push(rd);
+        all_targets.push(target_img);
+    }
+
+    // 結合
+    let train_rays_o = Tensor::cat(all_rays_o, 0).detach();
+    let train_rays_d = Tensor::cat(all_rays_d, 0).detach();
+    let train_targets = Tensor::cat(all_targets, 0).detach();
 
     let dataset = SceneDataset::new(train_rays_o, train_rays_d, train_targets);
     println!("Total training pixels: {}", dataset.num_total_pixels);
