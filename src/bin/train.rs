@@ -3,7 +3,6 @@ use burn::backend::{Autodiff, Wgpu};
 use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
-use burn::tensor::Distribution;
 use burn::tensor::activation;
 
 use rand::RngExt;
@@ -19,8 +18,8 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const N: usize = 10;
-    const BATCH_SIZE: usize = 4096; // VRAMに合わせて調整 (2048~8192くらい)
+    const N: usize = 20;
+    const BATCH_SIZE: usize = 8192; // VRAMに合わせて調整 (2048~8192くらい)
     const ITERATIONS: usize = 2000; // バッチ学習なので回数を増やす
 
     let width = 256;
@@ -147,23 +146,32 @@ fn main() {
     let lr = 0.05; // 球が多いので学習率は少し調整が必要かも
 
     for i in 1..=ITERATIONS {
+        let progress = i as f32 / ITERATIONS as f32;
+
         // --- 4. バッチサンプリング ---
         let mut rng = rand::rng();
 
-        // バッチを「全体ランダム」と「前景ブースト」で半分ずつに分ける
-        let uniform_batch_size = BATCH_SIZE / 2;
-        let fg_boost_batch_size = BATCH_SIZE - uniform_batch_size;
+        // --- サンプリング比率のアニーリング ---
+        let uniform_ratio = 0.8 - (0.6 * progress); // 0.8 -> 0.2 に減少
+
+        let mut uniform_batch_size = (BATCH_SIZE as f32 * uniform_ratio) as usize;
+        let mut fg_boost_batch_size = BATCH_SIZE - uniform_batch_size;
+
+        // 前景ピクセル数が少ない場合のキャップ処理
+        if !fg_indices.is_empty() && fg_indices.len() < fg_boost_batch_size {
+            fg_boost_batch_size = fg_indices.len();
+            uniform_batch_size = BATCH_SIZE - fg_boost_batch_size;
+        }
 
         let mut batch_indices = Vec::with_capacity(BATCH_SIZE);
 
-        // 1. 全体からのランダム抽出 (背景と前景が「実際の画像の比率」で自然に選ばれる)
+        // 1. 全体からの抽出
         for _ in 0..uniform_batch_size {
-            // 0 から num_total_pixels - 1 までの一様乱数
             batch_indices.push(rng.random_range(0..num_total_pixels as i32));
         }
 
-        // 2. 前景からの抽出 (物体の形を早く作るためのブースト)
-        if !fg_indices.is_empty() {
+        // 2. 前景からの抽出
+        if !fg_indices.is_empty() && fg_boost_batch_size > 0 {
             for _ in 0..fg_boost_batch_size {
                 let idx = rng.random_range(0..fg_indices.len());
                 batch_indices.push(fg_indices[idx]);
@@ -179,7 +187,6 @@ fn main() {
         let batch_target = train_targets.clone().select(0, indices).detach();
 
         // --- アニーリングの計算 ---
-        let progress = i as f32 / ITERATIONS as f32;
         let smooth_k = 5.0 + (32.0 - 5.0) * progress;
 
         // --- Forward & Backward ---
@@ -230,7 +237,7 @@ fn main() {
         // 球の表面が一番外側に張り出す距離 (中心距離 + 半径)
         let max_reach = dist_from_origin + radii;
 
-        // 境界線 1.5 を超えているかどうかのマスク
+        // 境界線 1.2 を超えているかどうかのマスク
         let out_of_bounds_mask = max_reach.clone().greater_elem(1.2);
         let excess_dist = max_reach.clone() - 1.1;
         let penalty_values = excess_dist.powf_scalar(2.0);
