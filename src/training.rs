@@ -1,12 +1,15 @@
 use burn::prelude::*;
 use burn::tensor::activation;
 
+use rand::RngExt;
+
 use crate::model::scene::SceneModel;
 
 pub fn compute_loss<B: Backend>(
     model: &SceneModel<B>,
     output: Tensor<B, 2>,
     batch_target: Tensor<B, 2>,
+    progress: f32,
 ) -> Tensor<B, 1> {
     let device = output.device();
 
@@ -18,8 +21,18 @@ pub fn compute_loss<B: Backend>(
     let target_sum = batch_target.sum_dim(1);
     let target_mask = target_sum.greater_elem(0.01); // 物体領域の判定
 
-    // 物体領域は厳しく(L1 * 10)、背景は緩く(MSE)
-    let reconstruction_loss = mse_map.mask_where(target_mask, abs_diff * 10.0).mean();
+    // 背景の重み: progressに応じて 1.0 から 5.0 へ増加
+    let bg_weight = 1.0 + progress * 4.0;
+
+    // ピクセルごとの「重みマップ」を作成
+    // ベースを背景の重みにしておき、物体領域(target_mask)の場所だけ 10.0 で上書きする
+    let weight_map = Tensor::zeros_like(&abs_diff)
+        .add_scalar(bg_weight)
+        .mask_where(target_mask, Tensor::zeros_like(&abs_diff).add_scalar(10.0));
+
+    // 誤差に重みを掛けて平均をとる
+    let reconstruction_loss = (abs_diff * weight_map).mean();
+
     let mut loss = reconstruction_loss;
 
     // 2. 幾何学的制約 (ペナルティ項)
@@ -77,6 +90,7 @@ pub fn prune_and_split<B: Backend>(
     stage: usize,
     stages: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize) {
+    let mut rng = rand::rng();
     let current_n = model.centers.dims()[0];
     let out_centers: Vec<f32> = model
         .centers
@@ -150,7 +164,7 @@ pub fn prune_and_split<B: Backend>(
         // 1. 厳密な Pruning (ゴミの徹底排除)
         // ==========================================
         // [a] サイズ異常（デカすぎる影、または小さすぎるゴミ）
-        if r > 0.35 || r < 0.005 {
+        if r > 1.0 - stage as f32 * 0.04 || r < 0.005 {
             continue;
         }
 
@@ -169,24 +183,45 @@ pub fn prune_and_split<B: Backend>(
         // 2. 条件付き Splitting (必要なものだけ割る)
         // ==========================================
         if stage < stages - 1 {
-            if r > 0.05 && move_dist_sq < 0.05 * 0.05 {
+            // 色によるPruningは削除し、移動量とサイズで判断
+            let split_threshold = 0.25 * (0.65_f32).powi(stage as i32);
+            if r > split_threshold && move_dist_sq > 0.05 * 0.05 {
                 // 【分割】半径が大きい ＝ まだ大まかな領域しかカバーできていない
-                // -> 2つの小さな球に割って、ディテールを表現させる
-                let offset = 0.03; // 少しずらす
-                let new_r = raw_radius - 0.5;
 
-                // 1つ目
-                next_centers.extend_from_slice(&[cx + offset, cy, cz + offset]);
-                next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
-                next_radii.push(new_r); // 半径を小さくリセット(softplusで約0.08)
+                // 1. ランダムな3D方向ベクトルを生成 (球面上のランダムサンプリング)
+                let z: f32 = rng.random_range(-1.0..1.0);
+                let theta: f32 = rng.random_range(0.0..std::f32::consts::TAU);
+                let r_xy = (1.0 - z * z).sqrt();
+                let dx = r_xy * theta.cos();
+                let dy = r_xy * theta.sin();
+                let dz = z;
 
-                // 2つ目（逆方向にずらす）
-                next_centers.extend_from_slice(&[cx - offset, cy, cz - offset]);
+                // 2. オフセット量は「現在の半径の半分」にする
+                let offset = r * 0.5;
+
+                // 3. 新しい半径を計算 (体積を半分にするため、元の半径の約0.8倍にする)
+                let target_r = (r * 0.8).max(0.01);
+                let new_raw_r = (target_r.exp() - 1.0).max(1e-6).ln();
+
+                // 1つ目 (ランダム方向にずらす)
+                next_centers.extend_from_slice(&[
+                    cx + dx * offset,
+                    cy + dy * offset,
+                    cz + dz * offset,
+                ]);
                 next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
-                next_radii.push(new_r);
+                next_radii.push(new_raw_r);
+
+                // 2つ目 (逆方向にずらす)
+                next_centers.extend_from_slice(&[
+                    cx - dx * offset,
+                    cy - dy * offset,
+                    cz - dz * offset,
+                ]);
+                next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
+                next_radii.push(new_raw_r);
             } else {
-                // 【維持】すでに十分小さい ＝ ディテールとして綺麗にフィットしている
-                // -> 無駄に割らずに、そのまま維持する
+                // 【維持】
                 next_centers.extend_from_slice(&[cx, cy, cz]);
                 next_colors.extend_from_slice(&[raw_r, raw_g, raw_b]);
                 next_radii.push(raw_radius);

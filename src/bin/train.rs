@@ -27,7 +27,7 @@ fn main() {
     // --------------------------------------------------------
     // 設定: 球を100個に増やす
     // --------------------------------------------------------
-    const BATCH_SIZE: usize = 8192; // VRAMに合わせて調整 (2048~8192くらい)
+    const BATCH_SIZE: usize = 16384; // VRAMに合わせて調整 (2048~8192くらい)
 
     let width = 256;
     let height = 256;
@@ -42,7 +42,7 @@ fn main() {
         50.0,
         &device,
     );
-    let (ro2, rd2) = create_camera_rays::<MyBackend>(
+    let (_ro2, _rd2) = create_camera_rays::<MyBackend>(
         width,
         height,
         [2.5, 0.0, 0.0],
@@ -50,7 +50,7 @@ fn main() {
         50.0,
         &device,
     );
-    let (ro3, rd3) = create_camera_rays::<MyBackend>(
+    let (_ro3, _rd3) = create_camera_rays::<MyBackend>(
         width,
         height,
         [0.0, 2.5, -0.0001],
@@ -59,10 +59,11 @@ fn main() {
         &device,
     );
 
+    const JSON_PATH: &str = "data/cameras.json";
+
     // --- JSONからカメラと画像を動的にロード ---
     println!("Loading camera configurations...");
-    let config_str =
-        std::fs::read_to_string("data/cameras.json").expect("Failed to read cameras.json");
+    let config_str = std::fs::read_to_string(JSON_PATH).expect("Failed to read cameras.json");
     let cameras: Vec<CameraConfig> =
         serde_json::from_str(&config_str).expect("Failed to parse JSON");
 
@@ -97,23 +98,37 @@ fn main() {
     );
 
     // ==========================================
-    // 1. 初期設定 (最初は5個からスタート)
+    // 1. 初期設定 (1個からスタート)
     // ==========================================
-    let mut current_n = 5;
+    let mut current_n = 7;
     let mut centers_vec = vec![0.0; current_n * 3];
     let mut colors_vec = vec![0.0; current_n * 3]; // Logit 0.0 (グレー)
     let mut radii_vec = vec![0.0; current_n]; // Softplus(-2.0) ≒ 0.12
     let mut light_dir_vec: Vec<f32> = vec![0.0, 1.0, 0.0];
     let mut ambient_intensity_vec: Vec<f32> = vec![-1.4]; // sigmoid(-1.4) ≒ 0.2
 
-    // 初期位置を少しだけ散らす
-    for i in 0..current_n {
-        centers_vec[i * 3 + 0] = (i as f32 * 0.1) - 0.2;
+    // 6方向 + 中心に球を配置
+    let directions = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+    for i in 0..6 {
+        centers_vec[i * 3] = directions[i][0] * 0.1;
+        centers_vec[i * 3 + 1] = directions[i][1] * 0.1;
+        centers_vec[i * 3 + 2] = directions[i][2] * 0.1;
     }
+    centers_vec[6 * 3] = 0.0;
+    centers_vec[6 * 3 + 1] = 0.0;
+    centers_vec[6 * 3 + 2] = 0.0;
 
     const STAGES: usize = 5; // 世代数 (例: 5世代)
-    const STEPS_PER_STAGE: usize = 600; // 1世代あたりの学習回数
+    const STEPS_PER_STAGE: usize = 700; // 1世代あたりの学習回数
     const TOTAL_STEPS: f32 = (STAGES * STEPS_PER_STAGE) as f32;
+    const MAX_SMOOTH: f32 = 32.0;
 
     println!("🚀 Start Multi-Stage Optimization...");
 
@@ -156,9 +171,9 @@ fn main() {
             let progress = global_step / TOTAL_STEPS;
 
             // [ここで先ほどの「サンプリング比率のアニーリング」と「kのアニーリング」を行う]
-            let smooth_k = 5.0 + (32.0 - 5.0) * progress;
+            let smooth_k = 5.0 + (MAX_SMOOTH - 5.0) * progress;
             // --- サンプリング比率のアニーリング ---
-            let uniform_ratio = 0.8 - (0.6 * progress); // 0.8 -> 0.2 に減少
+            let uniform_ratio = 0.8 - (0.4 * progress); // 0.8 -> 0.4 に減少
 
             // --- バッチサンプリング ---
             let (batch_ro, batch_rd, batch_target) =
@@ -169,7 +184,7 @@ fn main() {
             // ==========================================
             // --- Loss計算 ---
             // ==========================================
-            let loss = compute_loss(&model, output, batch_target);
+            let loss = compute_loss(&model, output, batch_target, progress);
 
             let grads = loss.backward();
             let grads = GradientsParams::from_grads(grads, &model);
@@ -257,22 +272,22 @@ fn main() {
                 height,
                 "steps/final_1.png",
             );
-            save_tiled_preview(
-                &model,
-                ro2.clone(),
-                rd2.clone(),
-                width,
-                height,
-                "steps/final_2.png",
-            );
-            save_tiled_preview(
-                &model,
-                ro3.clone(),
-                rd3.clone(),
-                width,
-                height,
-                "steps/final_3.png",
-            );
+            // save_tiled_preview(
+            //     &model,
+            //     ro2.clone(),
+            //     rd2.clone(),
+            //     width,
+            //     height,
+            //     "steps/final_2.png",
+            // );
+            // save_tiled_preview(
+            //     &model,
+            //     ro3.clone(),
+            //     rd3.clone(),
+            //     width,
+            //     height,
+            //     "steps/final_3.png",
+            // );
 
             // 全て完了したのでループを抜ける
             break;
@@ -338,7 +353,9 @@ fn save_tiled_preview<B: Backend>(
         // 推論 (勾配不要なので detach してもいいが、Model::forward が tensor を返すので
         // 返り値を detach するのが簡単)
         let out = model.forward(batch_ro, batch_rd, 32.0).detach();
-        outputs.push(out);
+        let current_chunk_size = out.dims()[0];
+        let out_color = out.slice([0..current_chunk_size, 0..3]);
+        outputs.push(out_color);
         start += chunk_size;
     }
 
